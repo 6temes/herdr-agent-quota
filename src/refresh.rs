@@ -1490,7 +1490,7 @@ mod tests {
         let shell = state.join("herdr/client-shell");
         std::fs::create_dir_all(&shell).unwrap();
         let absent_config = directory.path().join("absent.toml");
-        for (width, cells) in [(22, 4), (35, 12)] {
+        for (width, cells) in [(22, 6), (35, 12)] {
             std::fs::write(
                 shell.join("local-abc.json"),
                 format!("{{\"sidebar_width\": {width}}}"),

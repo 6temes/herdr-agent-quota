@@ -68,6 +68,28 @@ const CONFIG_PRESENCE_FILE: &str = "herdr-config.original.present";
 const QUOTA_SAFE_COLOR: &str = "#82d978";
 const QUOTA_WARNING_COLOR: &str = "#e4b957";
 const QUOTA_DANGER_COLOR: &str = "#f16f7e";
+// The same three bands, muted, for the meter rows only. `packed` and
+// `stacked` tint one short token, where a full-strength hue is legible; a
+// `gauges` row repeats it across a dozen bar glyphs, where it reads as alarm
+// rather than as a reading. Both sets exist because Herdr fixes `fg` per token
+// name, so a layout cannot restyle a token it shares with another layout.
+const GAUGE_QUOTA_SAFE_COLOR: &str = "#98b17d";
+const GAUGE_QUOTA_WARNING_COLOR: &str = "#dec27f";
+const GAUGE_QUOTA_DANGER_COLOR: &str = "#df919b";
+const SEVERITY_PALETTE: [&str; 3] = [QUOTA_SAFE_COLOR, QUOTA_WARNING_COLOR, QUOTA_DANGER_COLOR];
+const GAUGE_SEVERITY_PALETTE: [&str; 3] = [
+    GAUGE_QUOTA_SAFE_COLOR,
+    GAUGE_QUOTA_WARNING_COLOR,
+    GAUGE_QUOTA_DANGER_COLOR,
+];
+
+/// The normal/warning/danger hues a layout paints its quota rows with.
+fn severity_palette(layout: SidebarLayout) -> [&'static str; 3] {
+    match layout {
+        SidebarLayout::Gauges => GAUGE_SEVERITY_PALETTE,
+        SidebarLayout::Packed | SidebarLayout::Stacked => SEVERITY_PALETTE,
+    }
+}
 const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 8] = [
     (Harness::Claude, "claude", Some("#e88461"), Some("#f0a080")),
     (Harness::Codex, "codex", Some("#c4d7f5"), Some("#aab9d0")),
@@ -947,16 +969,18 @@ fn append_identity_row(rows: &mut Array) {
 }
 
 fn append_packed_quota_rows(rows: &mut Array) {
+    let palette = severity_palette(SidebarLayout::Packed);
     append_cache_row(rows);
 
     let mut context_row = styled_row("$quota_context", None, Some(false), Some(false));
-    append_window_style_tokens(&mut context_row, "quota_week_inline");
+    append_window_style_tokens(&mut context_row, "quota_week_inline", palette);
     rows.push(Value::Array(context_row));
 
-    append_window_row(rows);
+    append_window_row(rows, palette);
 }
 
 fn append_stacked_quota_rows(rows: &mut Array, layout: SidebarLayout) {
+    let palette = severity_palette(layout);
     rows.push(Value::Array(styled_row(
         "$quota_cache",
         None,
@@ -986,7 +1010,7 @@ fn append_stacked_quota_rows(rows: &mut Array, layout: SidebarLayout) {
         // an oversight rather than a decision.
         SidebarLayout::Gauges => {
             let mut context_row = Array::new();
-            append_context_style_tokens(&mut context_row);
+            append_context_style_tokens(&mut context_row, palette);
             rows.push(Value::Array(context_row));
         }
         _ => rows.push(Value::Array(styled_row(
@@ -997,14 +1021,14 @@ fn append_stacked_quota_rows(rows: &mut Array, layout: SidebarLayout) {
         ))),
     }
     let mut five_hour = Array::new();
-    append_window_style_tokens(&mut five_hour, "quota_5h");
+    append_window_style_tokens(&mut five_hour, "quota_5h", palette);
     rows.push(Value::Array(five_hour));
     // Both week style families live on this row so the existing publish
     // choice (inline when 5h is empty, limits when 5h is present) still
     // renders exactly one 7d line.
     let mut week = Array::new();
-    append_window_style_tokens(&mut week, "quota_week_inline");
-    append_window_style_tokens(&mut week, "quota_week");
+    append_window_style_tokens(&mut week, "quota_week_inline", palette);
+    append_window_style_tokens(&mut week, "quota_week", palette);
     rows.push(Value::Array(week));
 }
 
@@ -1084,16 +1108,16 @@ fn append_cache_row(rows: &mut Array) {
     ])));
 }
 
-fn append_window_style_tokens(row: &mut Array, base: &str) {
+fn append_window_style_tokens(row: &mut Array, base: &str, palette: [&'static str; 3]) {
     // One compact token per window (`5h 0% 1h18m`). Herdr joins sibling
     // tokens with ` · `, so splitting label/percent/eta cannot stay compact.
     // Exactly the bands `Severity::for_window` can produce. There is no
     // "caution" row: that variant was unreachable, so the token could never
     // be filled and only ever consumed a slot.
     for (suffix, color) in [
-        ("normal", Some(QUOTA_SAFE_COLOR)),
-        ("warning", Some(QUOTA_WARNING_COLOR)),
-        ("danger", Some(QUOTA_DANGER_COLOR)),
+        ("normal", Some(palette[0])),
+        ("warning", Some(palette[1])),
+        ("danger", Some(palette[2])),
         ("unknown", None),
     ] {
         row.push(styled_token(
@@ -1108,12 +1132,8 @@ fn append_window_style_tokens(row: &mut Array, base: &str) {
 /// The context row's own severity family. Context severity is read from the
 /// context *left*, and `Severity::for_context_remaining` always lands on one
 /// of these three, so there is no `unknown` variant to fill.
-fn append_context_style_tokens(row: &mut Array) {
-    for (suffix, color) in [
-        ("normal", QUOTA_SAFE_COLOR),
-        ("warning", QUOTA_WARNING_COLOR),
-        ("danger", QUOTA_DANGER_COLOR),
-    ] {
+fn append_context_style_tokens(row: &mut Array, palette: [&'static str; 3]) {
+    for (suffix, color) in ["normal", "warning", "danger"].into_iter().zip(palette) {
         row.push(styled_token(
             &format!("$quota_context_{suffix}"),
             Some(color),
@@ -1123,10 +1143,10 @@ fn append_context_style_tokens(row: &mut Array) {
     }
 }
 
-fn append_window_row(rows: &mut Array) {
+fn append_window_row(rows: &mut Array, palette: [&'static str; 3]) {
     let mut row = Array::new();
     for base in ["quota_5h", "quota_week"] {
-        append_window_style_tokens(&mut row, base);
+        append_window_style_tokens(&mut row, base, palette);
     }
     rows.push(Value::Array(row));
 }
@@ -1656,9 +1676,9 @@ rows = [["state_icon", "agent"]]
         assert_eq!(
             styled,
             vec![
-                ("$quota_context_normal", QUOTA_SAFE_COLOR),
-                ("$quota_context_warning", QUOTA_WARNING_COLOR),
-                ("$quota_context_danger", QUOTA_DANGER_COLOR),
+                ("$quota_context_normal", GAUGE_QUOTA_SAFE_COLOR),
+                ("$quota_context_warning", GAUGE_QUOTA_WARNING_COLOR),
+                ("$quota_context_danger", GAUGE_QUOTA_DANGER_COLOR),
             ]
         );
         assert!(!rows
@@ -1746,6 +1766,7 @@ rows = [["state_icon", "agent"]]
                     apply(original, second),
                     "{first:?} then {second:?} differs from a fresh {second:?} install"
                 );
+                assert_severity_palette(&switched, second);
             }
         }
     }
@@ -1799,6 +1820,109 @@ rows = [["state_icon", "agent"]]
                     "{layout:?} output changed:\n{updated}"
                 );
             }
+        }
+    }
+
+    /// The severity hexes a layout is expected to publish on its meter rows.
+    /// `gauges` gets the muted set; the other two keep the saturated one.
+    fn assert_severity_palette(sidebar: &str, layout: SidebarLayout) {
+        let document = sidebar.parse::<DocumentMut>().unwrap();
+        let expected = severity_palette(layout);
+        for base in ["quota_5h", "quota_week", "quota_week_inline"] {
+            for (suffix, hex) in ["normal", "warning", "danger"].into_iter().zip(expected) {
+                let token = format!("${base}_{suffix}");
+                assert_eq!(
+                    token_fg(&document, &token).as_deref(),
+                    Some(hex),
+                    "{layout:?} wrote the wrong fg on {token}"
+                );
+            }
+        }
+        for (suffix, hex) in ["normal", "warning", "danger"].into_iter().zip(expected) {
+            let token = format!("$quota_context_{suffix}");
+            let fg = token_fg(&document, &token);
+            match layout {
+                SidebarLayout::Gauges => assert_eq!(
+                    fg.as_deref(),
+                    Some(hex),
+                    "{layout:?} wrote the wrong fg on {token}"
+                ),
+                _ => assert_eq!(fg, None, "{layout:?} wrote {token}"),
+            }
+        }
+    }
+
+    /// The `fg` a named token carries in `rows`, or `None` when the layout
+    /// never publishes it.
+    fn token_fg(document: &DocumentMut, token: &str) -> Option<String> {
+        document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_array)
+            .flat_map(Array::iter)
+            .find(|item| configured_token_name(item) == Some(token))
+            .and_then(Value::as_inline_table)
+            .and_then(|table| table.get("fg"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
+    /// A whole row of bar glyphs in a full-strength hue reads as alarm, so
+    /// `gauges` publishes its own muted set. The other two layouts colour one
+    /// short token and must keep the saturated hexes byte for byte.
+    #[test]
+    fn only_gauges_publishes_the_muted_severity_palette() {
+        for layout in SidebarLayout::CHOICES {
+            let updated = add_quota_row_for("", &AgentSelection::SUPPORTED, layout).unwrap();
+            assert_severity_palette(&updated, layout);
+        }
+        let gauged =
+            add_quota_row_for("", &AgentSelection::SUPPORTED, SidebarLayout::Gauges).unwrap();
+        for hex in [
+            GAUGE_QUOTA_SAFE_COLOR,
+            GAUGE_QUOTA_WARNING_COLOR,
+            GAUGE_QUOTA_DANGER_COLOR,
+        ] {
+            assert!(gauged.contains(hex), "gauges lacks {hex}:\n{gauged}");
+        }
+        for hex in [QUOTA_SAFE_COLOR, QUOTA_DANGER_COLOR] {
+            assert!(
+                !gauged.contains(hex),
+                "gauges still writes {hex}:\n{gauged}"
+            );
+        }
+        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+            let plain = add_quota_row_for("", &AgentSelection::SUPPORTED, layout).unwrap();
+            for hex in [
+                GAUGE_QUOTA_SAFE_COLOR,
+                GAUGE_QUOTA_WARNING_COLOR,
+                GAUGE_QUOTA_DANGER_COLOR,
+            ] {
+                assert!(!plain.contains(hex), "{layout:?} wrote {hex}:\n{plain}");
+            }
+        }
+    }
+
+    /// `rows_by_agent` is a themed copy of `rows`, so a palette that only
+    /// reached the shared rows would leave every per-provider row saturated.
+    #[test]
+    fn the_gauges_palette_reaches_the_per_provider_rows() {
+        let updated =
+            add_quota_row_for("", &AgentSelection::SUPPORTED, SidebarLayout::Gauges).unwrap();
+        let document = updated.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"]
+            .as_array()
+            .unwrap();
+        for token in ["$quota_5h_normal", "$quota_context_normal"] {
+            let fg = rows
+                .iter()
+                .filter_map(Value::as_array)
+                .flat_map(Array::iter)
+                .find(|item| configured_token_name(item) == Some(token))
+                .and_then(Value::as_inline_table)
+                .and_then(|table| table.get("fg"))
+                .and_then(Value::as_str);
+            assert_eq!(fg, Some(GAUGE_QUOTA_SAFE_COLOR), "{token}");
         }
     }
 

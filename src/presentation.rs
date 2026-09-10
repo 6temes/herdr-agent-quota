@@ -5,10 +5,10 @@ use crate::model::{
     ProviderSnapshot, ResetAt, Severity, UsageWindow, WindowKind,
 };
 
-/// A window row's fixed cost in columns: a four-character label, the two
+/// A window row's fixed cost in columns: a two-character label, the two
 /// spaces separating it from the meter and the number, `100%`, and the longest
 /// ETA `format_duration` can print (`23h59m`, `29d23h`).
-const METER_ROW_OVERHEAD: usize = 17;
+const METER_ROW_OVERHEAD: usize = 15;
 /// One column the meter never claims, because Herdr auto-scales the rendered
 /// sidebar around the configured width.
 const METER_SAFETY_MARGIN: usize = 1;
@@ -21,11 +21,12 @@ const MIN_METER_CELLS: usize = 4;
 // column wide in a CJK locale and identical in width to each other.
 const METER_FILLED: char = '\u{25b0}';
 const METER_EMPTY: char = '\u{25b1}';
-/// The gauges label column. A longer label renders through the non-gauge
+/// The gauges label column, the width of `5h` and `7d`. A longer label —
+/// `30d`, or an omp window naming itself — renders through the non-gauge
 /// shape rather than being truncated.
-const GAUGE_LABEL_WIDTH: usize = 4;
-/// `context` does not fit the label column; `cntx` does, and only here.
-const GAUGE_CONTEXT_LABEL: &str = "cntx";
+const GAUGE_LABEL_WIDTH: usize = 2;
+/// `context` does not fit the label column; `cx` does, and only here.
+const GAUGE_CONTEXT_LABEL: &str = "cx";
 /// How many meter cells a window row can afford at `sidebar_width` columns,
 /// or `None` when the row should render through its existing non-gauge shape
 /// rather than lose the number the bar labels to truncation.
@@ -539,7 +540,10 @@ fn compact_window_parts(
     style: PercentStyle,
     shape: SidebarShape,
 ) -> WindowParts {
-    let label = window.display_label();
+    let label = match shape.layout {
+        SidebarLayout::Gauges => window.gauge_display_label(),
+        SidebarLayout::Packed | SidebarLayout::Stacked => window.display_label(),
+    };
     let percent = style.percent_of(window);
     let eta = window
         .resets_at
@@ -1368,8 +1372,8 @@ mod tests {
     #[test]
     fn the_meter_cell_count_follows_the_configured_sidebar_width() {
         assert_eq!(meter_cells(18), None);
-        assert_eq!(meter_cells(22), Some(4));
-        assert_eq!(meter_cells(26), Some(8));
+        assert_eq!(meter_cells(22), Some(6));
+        assert_eq!(meter_cells(26), Some(10));
         assert_eq!(meter_cells(30), Some(12));
         assert_eq!(meter_cells(36), Some(12));
     }
@@ -1431,10 +1435,10 @@ mod tests {
 
     #[test]
     fn a_sidebar_too_narrow_for_four_cells_asks_for_no_meter_at_all() {
-        for width in 18..22 {
+        for width in 18..20 {
             assert_eq!(meter_cells(width), None, "width {width}");
         }
-        assert_eq!(meter_cells(22), Some(4));
+        assert_eq!(meter_cells(20), Some(4));
     }
 
     /// The shape a `gauges` sidebar of `width` columns resolves to. Every
@@ -1444,7 +1448,7 @@ mod tests {
         SidebarShape::new(SidebarLayout::Gauges, width)
     }
 
-    /// Eight cells, the default 26-column sidebar. The bar fills to the
+    /// Ten cells, the default 26-column sidebar. The bar fills to the
     /// number beside it: 81% remaining draws a bar 81% full.
     #[test]
     fn the_gauges_meter_fills_to_the_remaining_number_it_prints() {
@@ -1462,12 +1466,12 @@ mod tests {
         );
         assert_eq!(
             values.quota_5h,
-            "5h   \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}  81% 43m"
+            "5h \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}  81% 43m"
         );
         assert_eq!(values.quota_5h_severity, Some(Severity::Normal));
     }
 
-    /// Eight cells. The `used` style flips both the number and the bar, and
+    /// Ten cells. The `used` style flips both the number and the bar, and
     /// neither touches severity, which still reads remaining.
     #[test]
     fn the_used_style_shortens_the_gauges_meter_without_changing_its_colour() {
@@ -1492,7 +1496,7 @@ mod tests {
         );
         assert_eq!(
             used.quota_5h,
-            "5h   \u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  19% 43m"
+            "5h \u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  19% 43m"
         );
         assert_eq!(used.quota_5h_severity, remaining.quota_5h_severity);
     }
@@ -1513,7 +1517,7 @@ mod tests {
         );
         assert_eq!(
             remaining.quota_context,
-            "cntx \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  57%"
+            "cx \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  57%"
         );
         let used = MetadataTokens::from_snapshot_for_session(
             &snapshot,
@@ -1524,7 +1528,7 @@ mod tests {
         );
         assert_eq!(
             used.quota_context,
-            "cntx \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  43%"
+            "cx \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  43%"
         );
     }
 
@@ -1627,10 +1631,10 @@ mod tests {
         }
     }
 
-    /// Eight cells, the default 26-column sidebar. The meter fills to the
-    /// number beside it, and `cntx` exists only under `gauges`.
+    /// Ten cells, the default 26-column sidebar. The meter fills to the
+    /// number beside it, and `cx` exists only under `gauges`.
     #[test]
-    fn the_context_meter_fills_to_its_number_and_is_labelled_cntx_only_under_gauges() {
+    fn the_context_meter_fills_to_its_number_and_is_labelled_cx_only_under_gauges() {
         let snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
             .with_context(Some(crate::model::ContextUsage::new(31.0).unwrap()));
         let gauged = MetadataTokens::from_snapshot_for_session(
@@ -1642,7 +1646,7 @@ mod tests {
         );
         assert_eq!(
             gauged.quota_context,
-            "cntx \u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  31%"
+            "cx \u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  31%"
         );
         for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
             let plain = MetadataTokens::from_snapshot_for_session(
@@ -1656,7 +1660,7 @@ mod tests {
         }
     }
 
-    /// Eight cells. The weekly slot renders through `from_snapshot_parts`
+    /// Ten cells. The weekly slot renders through `from_snapshot_parts`
     /// rather than `five_hour_slot`, so it needs its own pin.
     #[test]
     fn the_weekly_window_carries_a_meter_of_its_own() {
@@ -1674,7 +1678,7 @@ mod tests {
         );
         assert_eq!(
             values.quota_week,
-            "7d   \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}  83% 4d22h"
+            "7d \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}  83% 4d22h"
         );
         assert_eq!(values.quota_week.chars().count(), 24);
     }
@@ -1704,9 +1708,10 @@ mod tests {
         assert_eq!(meter(57, 8).matches('\u{25b0}').count(), 5);
     }
 
-    /// Eight cells. `{:.0}` rounds half to even and `f64::round` rounds half
-    /// away from zero; at exactly 18.5 they disagree, and a bar that read the
-    /// float directly would show two cells beside `18%`.
+    /// Eight cells, at 24 columns. `{:.0}` rounds half to even and
+    /// `f64::round` rounds half away from zero; at exactly 18.5 they
+    /// disagree, and a bar that read the float directly would show two cells
+    /// beside `18%`.
     #[test]
     fn the_meter_and_the_number_round_the_same_way_at_a_half_percent() {
         let snapshot = ProviderSnapshot::new(
@@ -1719,11 +1724,11 @@ mod tests {
             0,
             None,
             PercentStyle::Remaining,
-            gauges(26),
+            gauges(24),
         );
         assert_eq!(
             values.quota_5h,
-            "5h   \u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  18% 43m"
+            "5h \u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  18% 43m"
         );
     }
 
@@ -1745,7 +1750,7 @@ mod tests {
         );
         assert_eq!(
             wide.quota_week,
-            "7d   \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}  83% 4d22h"
+            "7d \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}  83% 4d22h"
         );
 
         let narrow = MetadataTokens::from_snapshot_for_session(
@@ -1796,7 +1801,7 @@ mod tests {
         }
     }
 
-    /// A label wider than the four-character column keeps the whole row on
+    /// A label wider than the two-character column keeps the whole row on
     /// the non-gauge shape, because truncating a label is worse than
     /// dropping a bar.
     #[test]
@@ -1817,7 +1822,7 @@ mod tests {
         assert_eq!(values.quota_5h, "usage 42% 3h10m");
     }
 
-    /// Eight cells. `week_style_base` folds week beside context when 5h is
+    /// Ten cells. `week_style_base` folds week beside context when 5h is
     /// empty; the meter has to ride along into that token too.
     #[test]
     fn a_week_row_folded_beside_context_still_carries_its_meter() {
@@ -1836,7 +1841,7 @@ mod tests {
         assert_eq!(values.quota_5h, "");
         assert_eq!(
             values.quota_week,
-            "7d   \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}  83% 4d22h"
+            "7d \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}  83% 4d22h"
         );
     }
 
@@ -1864,12 +1869,94 @@ mod tests {
         // row the default width has to hold.
         assert_eq!(
             values.quota_5h,
-            "5h   \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0} 100% 23h59m"
+            "5h \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0} 100% 23h59m"
         );
         for value in [&values.quota_5h, &values.quota_week, &values.quota_context] {
             assert!(!value.contains('\u{b7}'), "{value}");
             assert!(value.chars().count() < 80, "{value}");
         }
         assert_eq!(values.quota_5h.chars().count(), 25);
+    }
+
+    /// Ten cells. The label column is two characters wide, so every label the
+    /// gauges layout can draw a meter for is already exactly that wide and no
+    /// row pads.
+    #[test]
+    fn the_gauges_label_column_is_two_characters_wide() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::FiveHour, 19.0, 2_580)],
+            0,
+        )
+        .with_context(Some(crate::model::ContextUsage::new(31.0).unwrap()));
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Used,
+            gauges(26),
+        );
+        assert!(
+            values.quota_5h.starts_with("5h \u{25b0}"),
+            "{}",
+            values.quota_5h
+        );
+        assert!(
+            values.quota_context.starts_with("cx \u{25b0}"),
+            "{}",
+            values.quota_context
+        );
+    }
+
+    /// A monthly allowance rides the long-window slot when a plan has no
+    /// weekly bucket, so losing its meter would leave that user without one
+    /// on their only recurring row. `30d` is one character past the column;
+    /// the short form fits, and `packed` keeps the full label.
+    #[test]
+    fn a_monthly_window_keeps_its_meter_under_a_two_letter_label() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::Monthly, 17.0, 424_800)],
+            0,
+        );
+        let gauged = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        assert_eq!(gauged.quota_week, "mo ▰▰▰▰▰▰▰▰▱▱  83% 4d22h");
+
+        let packed = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            SidebarLayout::Packed.into(),
+        );
+        assert_eq!(packed.quota_week, "30d 83% 4d22h");
+    }
+
+    /// A provider-supplied label is never rewritten, so one too long for the
+    /// column keeps the plain row rather than being abbreviated by guesswork.
+    #[test]
+    fn a_provider_supplied_long_label_still_keeps_the_plain_row() {
+        let long = UsageWindow::new(
+            WindowKind::Monthly,
+            17.0,
+            Some(ResetAt::from_unix_seconds(424_800)),
+        )
+        .unwrap()
+        .with_source_window("Monthly", None);
+        let snapshot = ProviderSnapshot::new(Provider::Omp, vec![long], 0);
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        assert_eq!(values.quota_week, "Monthly 83% 4d22h");
     }
 }
