@@ -1,6 +1,5 @@
-use crate::cli::SidebarLayout;
 use crate::model::{ContextUsage, Harness, Provider};
-use crate::presentation::MetadataTokens;
+use crate::presentation::{MetadataTokens, SidebarShape};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -461,7 +460,7 @@ pub fn publish_pane_tokens(
     panes: &[AgentPane],
     tokens: &[PaneTokens],
     sequence: u64,
-    layout: SidebarLayout,
+    shape: SidebarShape,
 ) -> Result<()> {
     let executable = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
     let mut reported = 0usize;
@@ -480,7 +479,7 @@ pub fn publish_pane_tokens(
             apply_identity(&mut desired, identity);
         }
         if let Some(context) = &pane_tokens.context {
-            apply_context(&mut desired, context, sequence / 1_000, layout);
+            apply_context(&mut desired, context, sequence / 1_000, shape);
         }
         if metadata_matches(&pane.tokens, &desired) {
             continue;
@@ -630,12 +629,12 @@ fn apply_context(
     tokens: &mut BTreeMap<String, String>,
     context: &ContextUsage,
     now_unix: u64,
-    layout: SidebarLayout,
+    shape: SidebarShape,
 ) {
     insert_optional_token(
         tokens,
         "quota_context",
-        &crate::presentation::sidebar_context(Some(context), layout),
+        &crate::presentation::sidebar_context(Some(context), shape),
     );
     let cache = crate::presentation::sidebar_cache(Some(context));
     if cache.is_empty() {
@@ -1212,7 +1211,7 @@ mod tests {
             &mut tokens,
             &ContextUsage::new(12.0).unwrap(),
             0,
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(
             tokens.get("quota_context").map(String::as_str),

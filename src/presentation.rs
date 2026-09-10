@@ -1,8 +1,60 @@
 use crate::cli::{PercentStyle, SidebarLayout};
+use crate::configure::herdr::{DEFAULT_SIDEBAR_MAX_WIDTH, DEFAULT_SIDEBAR_MIN_WIDTH};
 use crate::model::{
     format_percent, live_windows, long_window, window_in, Provider, ProviderSnapshot, ResetAt,
     Severity, UsageWindow, WindowKind,
 };
+
+/// A window row's fixed cost in columns: a four-character label, the two
+/// spaces separating it from the meter and the number, `100%`, and the longest
+/// ETA `format_duration` can print (`23h59m`, `29d23h`).
+const METER_ROW_OVERHEAD: usize = 17;
+/// One column the meter never claims, because Herdr auto-scales the rendered
+/// sidebar around the configured width.
+const METER_SAFETY_MARGIN: usize = 1;
+/// Past a dozen cells a bar stops being read at a glance and becomes texture.
+const MAX_METER_CELLS: usize = 12;
+/// Below four cells the bar cannot distinguish enough levels to be worth the
+/// columns it costs, so the row keeps its non-gauge shape instead.
+const MIN_METER_CELLS: usize = 4;
+
+/// How many meter cells a window row can afford at `sidebar_width` columns,
+/// or `None` when the row should render through its existing non-gauge shape
+/// rather than lose the number the bar labels to truncation (KTD10).
+pub(crate) fn meter_cells(sidebar_width: usize) -> Option<usize> {
+    let width = sidebar_width.clamp(DEFAULT_SIDEBAR_MIN_WIDTH, DEFAULT_SIDEBAR_MAX_WIDTH);
+    let cells = width
+        .saturating_sub(METER_SAFETY_MARGIN + METER_ROW_OVERHEAD)
+        .min(MAX_METER_CELLS);
+    (cells >= MIN_METER_CELLS).then_some(cells)
+}
+
+/// How the sidebar draws a row: the layout the user chose, and the meter size
+/// their configured sidebar width affords. The two always travel together,
+/// from the publish sites down to each rendered row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SidebarShape {
+    pub layout: SidebarLayout,
+    pub meter_cells: Option<usize>,
+}
+
+impl SidebarShape {
+    pub fn new(layout: SidebarLayout, sidebar_width: usize) -> Self {
+        Self {
+            layout,
+            meter_cells: meter_cells(sidebar_width),
+        }
+    }
+}
+
+impl From<SidebarLayout> for SidebarShape {
+    fn from(layout: SidebarLayout) -> Self {
+        Self {
+            layout,
+            meter_cells: None,
+        }
+    }
+}
 
 /// Exactly the values a pane can be given.
 ///
@@ -43,7 +95,7 @@ impl MetadataTokens {
             now_unix,
             None,
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         )
     }
 
@@ -52,7 +104,7 @@ impl MetadataTokens {
         now_unix: u64,
         session_id: Option<&str>,
         style: PercentStyle,
-        layout: SidebarLayout,
+        shape: SidebarShape,
     ) -> Self {
         Self::from_snapshot_parts(
             snapshot,
@@ -65,7 +117,7 @@ impl MetadataTokens {
                 snapshot.windows_for_session(session_id)
             },
             style,
-            layout,
+            shape,
         )
     }
 
@@ -82,7 +134,7 @@ impl MetadataTokens {
         now_unix: u64,
         session_id: Option<&str>,
         style: PercentStyle,
-        layout: SidebarLayout,
+        shape: SidebarShape,
     ) -> Self {
         let quota_model = match session_id {
             Some(session_id) => snapshot.model_for_session(Some(session_id)),
@@ -98,7 +150,7 @@ impl MetadataTokens {
             context,
             windows,
             style,
-            layout,
+            shape,
         )
     }
 
@@ -109,7 +161,7 @@ impl MetadataTokens {
         context: Option<&crate::model::ContextUsage>,
         windows: &[UsageWindow],
         style: PercentStyle,
-        layout: SidebarLayout,
+        shape: SidebarShape,
     ) -> Self {
         let live = live_windows(windows, now_unix);
         let windows = live.as_slice();
@@ -124,10 +176,10 @@ impl MetadataTokens {
         let long = long_window(windows);
         let quota_5h = if omp_windows {
             short_window
-                .map(|window| compact_window_parts(window, now_unix, style, layout).rendered())
+                .map(|window| compact_window_parts(window, now_unix, style, shape).rendered())
                 .unwrap_or_default()
         } else {
-            five_hour_slot(windows, snapshot.provider, now_unix, style, layout)
+            five_hour_slot(windows, snapshot.provider, now_unix, style, shape)
         };
         Self {
             quota_provider_model: provider_model_label(&quota_provider, &quota_model),
@@ -143,10 +195,10 @@ impl MetadataTokens {
                 }),
             quota_5h,
             quota_week: long
-                .map(|window| compact_window_parts(window, now_unix, style, layout).rendered())
+                .map(|window| compact_window_parts(window, now_unix, style, shape).rendered())
                 .unwrap_or_default(),
             quota_week_severity: long.map(|window| Severity::for_window(window, now_unix)),
-            quota_context: sidebar_context(context, layout),
+            quota_context: sidebar_context(context, shape),
             quota_cache: sidebar_cache(context),
             quota_cache_ttl: sidebar_cache_ttl(context, now_unix),
             quota_cache_state: sidebar_cache_state(context, now_unix),
@@ -254,10 +306,10 @@ fn five_hour_slot(
     provider: Provider,
     now_unix: u64,
     style: PercentStyle,
-    layout: SidebarLayout,
+    shape: SidebarShape,
 ) -> String {
     match window_in(windows, WindowKind::FiveHour) {
-        Some(window) => compact_window_parts(window, now_unix, style, layout).rendered(),
+        Some(window) => compact_window_parts(window, now_unix, style, shape).rendered(),
         None => missing_five_hour_label(provider)
             .unwrap_or_default()
             .to_string(),
@@ -284,12 +336,12 @@ fn missing_five_hour_severity(provider: Provider, quota_5h: &str) -> Option<Seve
 
 pub(crate) fn sidebar_context(
     context: Option<&crate::model::ContextUsage>,
-    layout: SidebarLayout,
+    shape: SidebarShape,
 ) -> String {
     let Some(context) = context else {
         return String::new();
     };
-    match layout {
+    match shape.layout {
         SidebarLayout::Packed | SidebarLayout::Stacked | SidebarLayout::Gauges => {
             format!("context {}%", format_percent(context.used_percent))
         }
@@ -382,9 +434,9 @@ fn compact_window_parts(
     window: &UsageWindow,
     now_unix: u64,
     style: PercentStyle,
-    layout: SidebarLayout,
+    shape: SidebarShape,
 ) -> WindowParts {
-    match layout {
+    match shape.layout {
         SidebarLayout::Packed | SidebarLayout::Stacked | SidebarLayout::Gauges => WindowParts {
             label: window.display_label().to_string(),
             percent: format!("{}%", format_percent(style.percent_of(window))),
@@ -605,7 +657,7 @@ mod tests {
             0,
             None,
             PercentStyle::Remaining,
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(remaining.quota_5h, "5h 42% 4h07m");
         assert_eq!(remaining.quota_week, "7d 73% 2d3h");
@@ -615,7 +667,7 @@ mod tests {
             0,
             None,
             PercentStyle::Used,
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(used.quota_5h, "5h 58% 4h07m");
         assert_eq!(used.quota_week, "7d 27% 2d3h");
@@ -641,14 +693,14 @@ mod tests {
             0,
             None,
             PercentStyle::default(),
-            SidebarLayout::Packed,
+            SidebarLayout::Packed.into(),
         );
         let stacked = MetadataTokens::from_snapshot_for_session(
             &snapshot,
             0,
             None,
             PercentStyle::default(),
-            SidebarLayout::Stacked,
+            SidebarLayout::Stacked.into(),
         );
         assert_eq!(packed, stacked);
         assert_eq!(packed.quota_5h, "5h 81% 43m");
@@ -671,7 +723,7 @@ mod tests {
                 0,
                 None,
                 PercentStyle::default(),
-                layout,
+                layout.into(),
             );
             assert_eq!(values.quota_5h, "5h 42% 4h07m");
             assert_eq!(values.quota_week, "7d 73% 2d3h");
@@ -767,7 +819,7 @@ mod tests {
             0,
             Some("session-1"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(session_one.quota_model, "Sonnet");
         assert_eq!(session_one.quota_provider_model, "Claude/Sonnet");
@@ -777,7 +829,7 @@ mod tests {
             0,
             Some("session-2"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(session_two.quota_model, "");
         assert_eq!(session_two.quota_provider_model, "Claude");
@@ -796,7 +848,7 @@ mod tests {
             0,
             Some("session-a"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(pane.quota_model, "SWE-1.7 Medium");
         assert_eq!(pane.quota_provider_model, "Devin/SWE-1.7 Medium");
@@ -819,7 +871,7 @@ mod tests {
             0,
             Some("session-a"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(switched.quota_model, "Opus 4.6");
         assert_eq!(switched.quota_provider_model, "Devin/Opus 4.6");
@@ -829,7 +881,7 @@ mod tests {
             0,
             Some("session-b"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(untouched.quota_model, "SWE-1.7 Medium");
         assert_eq!(untouched.quota_provider_model, "Devin/SWE-1.7 Medium");
@@ -849,7 +901,7 @@ mod tests {
             0,
             Some("session-1"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(values.quota_context, "context 43%");
         assert_eq!(values.quota_cache, "cache 72.7%");
@@ -859,7 +911,7 @@ mod tests {
                 0,
                 Some("session-2"),
                 PercentStyle::default(),
-                SidebarLayout::default()
+                SidebarShape::default()
             )
             .quota_context,
             ""
@@ -880,7 +932,7 @@ mod tests {
             0,
             None,
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(values.quota_provider_model, "Grok/grok-4.6");
         assert_eq!(values.quota_context, "");
@@ -938,7 +990,7 @@ mod tests {
             1_000,
             Some("codex-session"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(values.quota_cache, "cache 80.0%");
         assert_eq!(values.quota_cache_ttl, "ttl≈1h");
@@ -1016,7 +1068,7 @@ mod tests {
             0,
             Some("session-1"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(grok_pane.quota_week, "7d 69% 6d0h");
         assert_eq!(grok_pane.quota_5h, "");
@@ -1034,7 +1086,7 @@ mod tests {
             0,
             Some("session-1"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(codex_pane.quota_5h, "5h 60% 4h07m");
         assert_eq!(codex_pane.quota_week, "7d 69% 6d0h");
@@ -1067,7 +1119,7 @@ mod tests {
             0,
             Some("work"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(work.quota_5h, "5h 82% 4h07m");
         assert_eq!(work.quota_week, "7d 90% 6d0h");
@@ -1077,7 +1129,7 @@ mod tests {
             0,
             Some("personal"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(personal.quota_5h, "5h 18% 4h07m");
         assert_eq!(personal.quota_week, "7d 10% 6d0h");
@@ -1087,7 +1139,7 @@ mod tests {
             0,
             Some("other"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(unknown.quota_5h, "5h N/A");
         assert_eq!(unknown.quota_week, "");
@@ -1124,14 +1176,14 @@ mod tests {
             0,
             Some("session-c"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         let live = MetadataTokens::from_snapshot_for_pane(
             &snapshot,
             0,
             Some("session-a"),
             PercentStyle::default(),
-            SidebarLayout::default(),
+            SidebarShape::default(),
         );
         assert_eq!(idle.quota_5h, "5h 8% 4h07m");
         assert_eq!(live.quota_5h, "5h 8% 4h07m");
@@ -1195,5 +1247,31 @@ mod tests {
         ));
         let values = MetadataTokens::from_snapshot(&snapshot, 0);
         assert_eq!(values.quota_cache, "cache 99.2%");
+    }
+
+    /// KTD10's table: the bar shortens with the sidebar and disappears rather
+    /// than truncating the number it labels.
+    #[test]
+    fn the_meter_cell_count_follows_the_configured_sidebar_width() {
+        assert_eq!(meter_cells(18), None);
+        assert_eq!(meter_cells(22), Some(4));
+        assert_eq!(meter_cells(26), Some(8));
+        assert_eq!(meter_cells(30), Some(12));
+        assert_eq!(meter_cells(36), Some(12));
+    }
+
+    #[test]
+    fn a_sidebar_width_outside_the_documented_range_is_sized_as_its_nearest_bound() {
+        assert_eq!(meter_cells(0), meter_cells(18));
+        assert_eq!(meter_cells(12), meter_cells(18));
+        assert_eq!(meter_cells(48), meter_cells(36));
+    }
+
+    #[test]
+    fn a_sidebar_too_narrow_for_four_cells_asks_for_no_meter_at_all() {
+        for width in 18..22 {
+            assert_eq!(meter_cells(width), None, "width {width}");
+        }
+        assert_eq!(meter_cells(22), Some(4));
     }
 }
