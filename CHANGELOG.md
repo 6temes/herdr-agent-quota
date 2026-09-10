@@ -13,10 +13,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   any digit is read. Every bar fills to the number printed next to it, so the
   `5h` and `7d` meters follow `quota-percent` (remaining by default) while the
   `cntx` meter shows context consumed, which is what that number has always
-  reported. The meter sizes itself from Herdr's own `ui.sidebar_width` — eight
-  cells at the default 26, twelve at 30 or wider — and steps aside on a sidebar
-  too narrow to hold it, leaving the row exactly as `stacked` renders it rather
-  than truncating the number the bar labels. The bars live inside the values of
+  reported. The meter sizes itself from the sidebar width Herdr is rendering —
+  eight cells at 26 columns, twelve at 30 or wider — and steps aside on a
+  sidebar too narrow to hold it, leaving the row exactly as `stacked` renders
+  it rather than truncating the number the bar labels. The bars live inside the values of
   the tokens the plugin already publishes, so no metadata token names are added
   and the report budget and severity colors are untouched. `packed` and
   `stacked` are unchanged. Select it with `configure --sidebar-layout gauges`,

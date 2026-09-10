@@ -133,6 +133,13 @@ impl Settings {
         }
     }
 
+    /// Whether the sidebar Herdr is drawing has room for a meter at all.
+    /// Without one, `gauges` renders exactly as `stacked`, and the hint has
+    /// to say so rather than promise a bar the user will not see.
+    fn gauges_fit() -> bool {
+        crate::presentation::meter_cells(crate::configure::herdr::sidebar_width()).is_some()
+    }
+
     fn choice_hint(self, choice: Choice) -> &'static str {
         match choice {
             Choice::Percent => match self.percent {
@@ -142,7 +149,10 @@ impl Settings {
             Choice::Layout => match self.layout {
                 SidebarLayout::Packed => "cache·ttl and 5h·7d share a row",
                 SidebarLayout::Stacked => "every field on its own row",
-                SidebarLayout::Gauges => "a meter beside each quota number",
+                SidebarLayout::Gauges => match Self::gauges_fit() {
+                    true => "a meter beside each quota number",
+                    false => "sidebar too narrow: renders as stacked",
+                },
             },
             Choice::RowGap => match self.gap.as_u8() {
                 0 => "panes packed flush",
