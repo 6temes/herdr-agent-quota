@@ -22,13 +22,15 @@ the native `agent` row is omitted so `grok` does not sit above `Grok/grok-4.6`.
 Optional quota ordering and low-quota notifications are disabled by default.
 Empty fields collapse; percentages can show remaining or used quota.
 `gauges` puts a meter beside each quota number. Every bar fills to the number
-printed next to it, so the `5h` and `7d` bars follow the percentage style you
-choose while the `cntx` bar always shows context used. The meter is sized from
-the sidebar width Herdr is rendering — the width it auto-scaled to, or
-`ui.sidebar_width` if it has recorded none — and is dropped, never truncated,
-on a sidebar too narrow to hold it. Under `gauges` the `cntx` row takes a
-severity colour of its own, on the same green/amber/red scale as `5h` and `7d`
-but thresholded on context used: amber from 50%, red from 80%.
+printed next to it, and under `gauges` all three rows — `cntx`, `5h` and `7d` —
+print the one quantity `quota-percent` selects, so the column reads as a single
+scale. (`packed` and `stacked` keep printing `context N%` as consumption.) The
+meter is sized from the sidebar width Herdr is rendering — the width it
+auto-scaled to, or `ui.sidebar_width` if it has recorded none — and is dropped,
+never truncated, on a sidebar too narrow to hold it. Under `gauges` the `cntx`
+row takes a severity colour of its own, on the same green/amber/red scale as
+`5h` and `7d`: colour always reads the headroom left, whichever side of the
+ledger the number shows — amber below 50% of the context left, red below 20%.
 
 ## Install and upgrade
 

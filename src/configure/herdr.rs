@@ -1105,9 +1105,9 @@ fn append_window_style_tokens(row: &mut Array, base: &str) {
     }
 }
 
-/// The context row's own severity family. Context severity is read from
-/// context *used*, and `Severity::for_context_used` always lands on one of
-/// these three, so there is no `unknown` variant to fill.
+/// The context row's own severity family. Context severity is read from the
+/// context *left*, and `Severity::for_context_remaining` always lands on one
+/// of these three, so there is no `unknown` variant to fill.
 fn append_context_style_tokens(row: &mut Array) {
     for (suffix, color) in [
         ("normal", QUOTA_SAFE_COLOR),

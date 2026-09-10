@@ -124,8 +124,8 @@ pub struct MetadataTokens {
     pub quota_week: String,
     pub quota_week_severity: Option<Severity>,
     pub quota_context: String,
-    /// Reads context *used*, so it is high when the pane is in trouble — the
-    /// mirror of the window severities. Only `gauges` renders it.
+    /// Read from context *left*, on the same bands as the window severities,
+    /// whichever side of the ledger the row prints. Only `gauges` renders it.
     pub quota_context_severity: Option<Severity>,
     pub quota_cache: String,
     pub quota_cache_ttl: String,
@@ -252,9 +252,8 @@ impl MetadataTokens {
                 .map(|window| compact_window_parts(window, now_unix, style, shape).rendered())
                 .unwrap_or_default(),
             quota_week_severity: long.map(|window| Severity::for_window(window, now_unix)),
-            quota_context: sidebar_context(context, shape),
-            quota_context_severity: context
-                .map(|context| Severity::for_context_used(context.used_percent)),
+            quota_context: sidebar_context(context, style, shape),
+            quota_context_severity: context.map(|context| context_severity(context, style)),
             quota_cache: sidebar_cache(context),
             quota_cache_ttl: sidebar_cache_ttl(context, now_unix),
             quota_cache_state: sidebar_cache_state(context, now_unix),
@@ -391,21 +390,56 @@ fn missing_five_hour_severity(provider: Provider, quota_5h: &str) -> Option<Seve
         .then_some(Severity::Unknown)
 }
 
+/// The percentage the `gauges` context row prints under `style`.
+///
+/// One scale per sidebar: the context row joins a column with the window
+/// rows, and a column of aligned numbers reads as one quantity, so it prints
+/// the same side of the ledger they do.
+fn context_percent(context: &crate::model::ContextUsage, style: PercentStyle) -> f64 {
+    match style {
+        PercentStyle::Remaining => 100.0 - context.used_percent,
+        PercentStyle::Used => context.used_percent,
+    }
+}
+
+/// The context row's colour, always read from headroom and never from the
+/// number printed beside it. The meter still fills to that number, so under
+/// `used` a filling bar runs green → amber → red and under `remaining` a
+/// draining one does the same: colour means "how much is left" either way.
+///
+/// Classified on the integer the row prints, like [`Severity::for_window`],
+/// so colour and number cannot disagree at a band edge.
+pub(crate) fn context_severity(
+    context: &crate::model::ContextUsage,
+    style: PercentStyle,
+) -> Severity {
+    let printed = f64::from(printed_percent(context_percent(context, style)));
+    let remaining = match style {
+        PercentStyle::Remaining => printed,
+        PercentStyle::Used => 100.0 - printed,
+    };
+    Severity::for_context_remaining(remaining)
+}
+
 pub(crate) fn sidebar_context(
     context: Option<&crate::model::ContextUsage>,
+    style: PercentStyle,
     shape: SidebarShape,
 ) -> String {
     let Some(context) = context else {
         return String::new();
     };
-    // The context meter reads used because this row has always printed used;
-    // the bar and the number must never disagree.
     match gauge_cells(shape, GAUGE_CONTEXT_LABEL) {
-        Some(cells) => format!(
-            "{GAUGE_CONTEXT_LABEL} {} {:>3}%",
-            meter(printed_percent(context.used_percent), cells),
-            format_percent(context.used_percent)
-        ),
+        Some(cells) => {
+            let percent = context_percent(context, style);
+            format!(
+                "{GAUGE_CONTEXT_LABEL} {} {:>3}%",
+                meter(printed_percent(percent), cells),
+                format_percent(percent)
+            )
+        }
+        // `packed` and `stacked` never joined that column, and their row has
+        // always printed consumption; the style must not leak into them.
         None => format!("context {}%", format_percent(context.used_percent)),
     }
 }
@@ -1463,17 +1497,147 @@ mod tests {
         assert_eq!(used.quota_5h_severity, remaining.quota_5h_severity);
     }
 
-    /// Eight cells. The context meter reads used whatever the percent style
-    /// says, and `cntx` exists only under `gauges`.
+    /// One scale per sidebar: under `gauges` the context row prints through
+    /// the same percent style as the window rows, so the column of numbers
+    /// reads as one quantity. Twelve cells, a 30-column sidebar.
     #[test]
-    fn the_context_meter_reads_used_and_is_labelled_cntx_only_under_gauges() {
+    fn the_gauges_context_row_prints_through_the_chosen_percent_style() {
+        let snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
+            .with_context(Some(crate::model::ContextUsage::new(43.0).unwrap()));
+        let remaining = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(30),
+        );
+        assert_eq!(
+            remaining.quota_context,
+            "cntx \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  57%"
+        );
+        let used = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Used,
+            gauges(30),
+        );
+        assert_eq!(
+            used.quota_context,
+            "cntx \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  43%"
+        );
+    }
+
+    /// The style must not leak into the layouts that never joined the column:
+    /// `packed` and `stacked` keep printing consumption as `context N%`.
+    #[test]
+    fn packed_and_stacked_print_context_used_under_either_percent_style() {
+        let snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
+            .with_context(Some(crate::model::ContextUsage::new(43.0).unwrap()));
+        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+            for style in [PercentStyle::Remaining, PercentStyle::Used] {
+                let plain = MetadataTokens::from_snapshot_for_session(
+                    &snapshot,
+                    0,
+                    None,
+                    style,
+                    layout.into(),
+                );
+                assert_eq!(plain.quota_context, "context 43%", "{layout:?} {style:?}");
+            }
+        }
+    }
+
+    /// The whole point of the fix: cntx, 5h and 7d print the same quantity,
+    /// and all three move together when the style flips.
+    #[test]
+    fn every_gauges_row_prints_the_same_quantity_when_the_style_flips() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![
+                window(WindowKind::FiveHour, 31.0, 2_400),
+                window(WindowKind::Weekly, 23.0, 388_200),
+            ],
+            0,
+        )
+        .with_context(Some(crate::model::ContextUsage::new(43.0).unwrap()));
+        let used = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Used,
+            gauges(30),
+        );
+        for (token, expected) in [
+            (&used.quota_context, "43%"),
+            (&used.quota_5h, "31%"),
+            (&used.quota_week, "23%"),
+        ] {
+            assert!(token.contains(expected), "{token} lacks {expected}");
+        }
+        let remaining = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(30),
+        );
+        for (token, expected) in [
+            (&remaining.quota_context, "57%"),
+            (&remaining.quota_5h, "69%"),
+            (&remaining.quota_week, "77%"),
+        ] {
+            assert!(token.contains(expected), "{token} lacks {expected}");
+        }
+    }
+
+    /// Colour reads headroom on every row, so the context row bands on
+    /// remaining context and not on the number it happens to print.
+    #[test]
+    fn the_context_row_is_coloured_by_remaining_context_under_either_style() {
+        for (used, expected) in [
+            (0.0, Severity::Normal),
+            (31.0, Severity::Normal),
+            (49.0, Severity::Normal),
+            (50.0, Severity::Normal),
+            (51.0, Severity::Warning),
+            (53.0, Severity::Warning),
+            (79.0, Severity::Warning),
+            (80.0, Severity::Warning),
+            (81.0, Severity::Danger),
+            (85.0, Severity::Danger),
+            (100.0, Severity::Danger),
+        ] {
+            let snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
+                .with_context(Some(crate::model::ContextUsage::new(used).unwrap()));
+            for style in [PercentStyle::Remaining, PercentStyle::Used] {
+                let values = MetadataTokens::from_snapshot_for_session(
+                    &snapshot,
+                    0,
+                    None,
+                    style,
+                    gauges(30),
+                );
+                assert_eq!(
+                    values.quota_context_severity,
+                    Some(expected),
+                    "{used} used, {style:?}"
+                );
+            }
+        }
+    }
+
+    /// Eight cells, the default 26-column sidebar. The meter fills to the
+    /// number beside it, and `cntx` exists only under `gauges`.
+    #[test]
+    fn the_context_meter_fills_to_its_number_and_is_labelled_cntx_only_under_gauges() {
         let snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
             .with_context(Some(crate::model::ContextUsage::new(31.0).unwrap()));
         let gauged = MetadataTokens::from_snapshot_for_session(
             &snapshot,
             0,
             None,
-            PercentStyle::Remaining,
+            PercentStyle::Used,
             gauges(26),
         );
         assert_eq!(
@@ -1485,7 +1649,7 @@ mod tests {
                 &snapshot,
                 0,
                 None,
-                PercentStyle::Remaining,
+                PercentStyle::Used,
                 layout.into(),
             );
             assert_eq!(plain.quota_context, "context 31%", "{layout:?}");
