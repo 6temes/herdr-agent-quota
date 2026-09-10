@@ -814,6 +814,12 @@ fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
                 Some(false),
             )));
         }
+        SidebarLayout::Gauges => rows.push(Value::Array(styled_row(
+            "$quota_provider_model",
+            None,
+            Some(true),
+            Some(false),
+        ))),
     }
     rows.push(Value::Array(styled_row(
         "$quota_topic",
@@ -824,7 +830,7 @@ fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
     // Context folds the weekly quota when 5h is absent; empty rows collapse.
     match layout {
         SidebarLayout::Packed => append_packed_quota_rows(rows),
-        SidebarLayout::Stacked => append_stacked_quota_rows(rows),
+        SidebarLayout::Stacked | SidebarLayout::Gauges => append_stacked_quota_rows(rows),
     }
 }
 
@@ -1072,6 +1078,11 @@ fn print_diff_hint(layout: SidebarLayout, fields: FieldSet, brand: BrandColors) 
         SidebarLayout::Stacked => {
             println!(
                 "  show provider, model, the user prompt, then cache, TTL, context, 5h, and 7d on their own rows"
+            );
+        }
+        SidebarLayout::Gauges => {
+            println!(
+                "  show the user prompt, then cache, TTL, context, 5h, and 7d on their own rows, each with a meter beside the number"
             );
         }
     }
