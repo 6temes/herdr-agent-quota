@@ -914,30 +914,29 @@ impl Severity {
     pub fn for_window(window: &UsageWindow, _now_unix: u64) -> Self {
         // Remaining quota only. Three sidebar bands so packed 5h/7d rows
         // do not mix two nearby greens. Classify the rounded integer shown.
-        let displayed_remaining = window.remaining_percent.round();
+        Self::for_headroom(window.remaining_percent)
+    }
+
+    /// Headroom left in the context window, on the same bands as
+    /// [`Self::for_window`] — a sidebar row means the same thing whichever
+    /// row it is.
+    ///
+    /// Never `Unknown`: a context row exists only when a percent was read.
+    pub fn for_context_remaining(remaining_percent: f64) -> Self {
+        Self::for_headroom(remaining_percent)
+    }
+
+    /// The one band table every sidebar row is coloured by. Classify the
+    /// rounded integer, so a row's colour and its printed number can never
+    /// disagree at a threshold.
+    fn for_headroom(remaining_percent: f64) -> Self {
+        let displayed_remaining = remaining_percent.round();
         if displayed_remaining >= 50.0 {
             Self::Normal
         } else if displayed_remaining >= 20.0 {
             Self::Warning
         } else {
             Self::Danger
-        }
-    }
-
-    /// The context row reads *used*, not remaining, so its scale runs the
-    /// other way: a fuller context window is the worse one. Both scales end
-    /// green when the pane is healthy. Classify the rounded integer shown,
-    /// like [`Self::for_window`].
-    ///
-    /// Never `Unknown`: a context row exists only when a percent was read.
-    pub fn for_context_used(used_percent: f64) -> Self {
-        let displayed_used = used_percent.round();
-        if displayed_used >= 80.0 {
-            Self::Danger
-        } else if displayed_used >= 50.0 {
-            Self::Warning
-        } else {
-            Self::Normal
         }
     }
 }
@@ -1110,25 +1109,27 @@ mod tests {
         }
     }
 
-    /// Context severity runs the other way to the windows': it is thresholded
-    /// on used, so more is worse, and both scales read green when healthy.
+    /// Context severity reads headroom, exactly like a window's: it bands on
+    /// the context left, so every sidebar row means the same thing.
     #[test]
-    fn context_severity_is_thresholded_on_used_at_fifty_and_eighty() {
+    fn context_severity_is_thresholded_on_remaining_at_fifty_and_twenty() {
         for (used_percent, expected) in [
             (0.0, Severity::Normal),
             (31.0, Severity::Normal),
             (49.0, Severity::Normal),
             (49.4, Severity::Normal),
-            (50.0, Severity::Warning),
+            (50.0, Severity::Normal),
+            (51.0, Severity::Warning),
             (53.0, Severity::Warning),
             (79.0, Severity::Warning),
             (79.4, Severity::Warning),
-            (80.0, Severity::Danger),
+            (80.0, Severity::Warning),
+            (81.0, Severity::Danger),
             (85.0, Severity::Danger),
             (100.0, Severity::Danger),
         ] {
             assert_eq!(
-                Severity::for_context_used(used_percent),
+                Severity::for_context_remaining(100.0 - used_percent),
                 expected,
                 "{used_percent} used"
             );

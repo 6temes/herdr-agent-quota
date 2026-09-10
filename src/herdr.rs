@@ -1,5 +1,5 @@
 use crate::model::{ContextUsage, Harness, Provider};
-use crate::presentation::{MetadataTokens, SidebarShape};
+use crate::presentation::{MetadataTokens, RowStyle, SidebarShape};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -480,7 +480,7 @@ pub fn publish_pane_tokens(
     panes: &[AgentPane],
     tokens: &[PaneTokens],
     sequence: u64,
-    shape: SidebarShape,
+    row: RowStyle,
 ) -> Result<()> {
     let executable = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
     let mut reported = 0usize;
@@ -491,7 +491,7 @@ pub fn publish_pane_tokens(
         };
         let topic = display_topic(pane);
         let mut desired = match &pane_tokens.quota {
-            PaneQuotaUpdate::Replace(values) => desired_tokens(values, &topic, shape),
+            PaneQuotaUpdate::Replace(values) => desired_tokens(values, &topic, row.shape),
             PaneQuotaUpdate::Clear => desired_cleared_quota(pane),
             PaneQuotaUpdate::Preserve => pane.tokens.clone(),
         };
@@ -499,7 +499,7 @@ pub fn publish_pane_tokens(
             apply_identity(&mut desired, identity);
         }
         if let Some(context) = &pane_tokens.context {
-            apply_context(&mut desired, context, sequence / 1_000, shape);
+            apply_context(&mut desired, context, sequence / 1_000, row);
         }
         if metadata_matches(&pane.tokens, &desired) {
             continue;
@@ -658,15 +658,13 @@ fn apply_context(
     tokens: &mut BTreeMap<String, String>,
     context: &ContextUsage,
     now_unix: u64,
-    shape: SidebarShape,
+    row: RowStyle,
 ) {
     insert_context_token(
         tokens,
-        &crate::presentation::sidebar_context(Some(context), shape),
-        Some(crate::model::Severity::for_context_used(
-            context.used_percent,
-        )),
-        shape,
+        &crate::presentation::sidebar_context(Some(context), row.percent, row.shape),
+        Some(crate::presentation::context_severity(context, row.percent)),
+        row.shape,
     );
     let cache = crate::presentation::sidebar_cache(Some(context));
     if cache.is_empty() {
@@ -790,8 +788,8 @@ fn context_token_name(
     if shape.layout != crate::cli::SidebarLayout::Gauges {
         return "quota_context";
     }
-    // `Severity::for_context_used` never returns `Unknown`, and a caller with
-    // no severity has no coloured band to claim, so both read as normal.
+    // `Severity::for_context_remaining` never returns `Unknown`, and a caller
+    // with no severity has no coloured band to claim, so both read as normal.
     match severity {
         Some(crate::model::Severity::Warning) => "quota_context_warning",
         Some(crate::model::Severity::Danger) => "quota_context_danger",
@@ -908,6 +906,7 @@ fn is_status_line(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::PercentStyle;
     use crate::model::{
         CacheUsage, ContextUsage, ProviderSnapshot, ResetAt, UsageWindow, WindowKind,
     };
@@ -1283,27 +1282,40 @@ mod tests {
         assert!(names.contains(&"quota_cache_ttl"));
     }
 
-    /// The context row is coloured by context *used* under `gauges`: more
-    /// used is worse, the mirror image of the windows' remaining scale.
+    /// The context row is coloured by the context *left* under `gauges`, on
+    /// the windows' own bands, whichever side of the ledger it prints.
     #[test]
-    fn gauges_publishes_context_into_the_severity_name_its_used_percent_earns() {
+    fn gauges_publishes_context_into_the_severity_name_its_headroom_earns() {
         let gauges = SidebarShape::from(crate::cli::SidebarLayout::Gauges);
         for (used, expected) in [
             (31.0, "quota_context_normal"),
             (49.0, "quota_context_normal"),
-            (50.0, "quota_context_warning"),
+            (50.0, "quota_context_normal"),
+            (51.0, "quota_context_warning"),
             (53.0, "quota_context_warning"),
             (79.0, "quota_context_warning"),
-            (80.0, "quota_context_danger"),
+            (80.0, "quota_context_warning"),
+            (81.0, "quota_context_danger"),
             (85.0, "quota_context_danger"),
         ] {
-            let mut tokens = BTreeMap::new();
-            apply_context(&mut tokens, &ContextUsage::new(used).unwrap(), 0, gauges);
-            let published = CONTEXT_TOKEN_NAMES
-                .into_iter()
-                .filter(|name| tokens.contains_key(*name))
-                .collect::<Vec<_>>();
-            assert_eq!(published, vec![expected], "context {used} used");
+            for percent in [PercentStyle::Remaining, PercentStyle::Used] {
+                let mut tokens = BTreeMap::new();
+                apply_context(
+                    &mut tokens,
+                    &ContextUsage::new(used).unwrap(),
+                    0,
+                    RowStyle::new(percent, gauges),
+                );
+                let published = CONTEXT_TOKEN_NAMES
+                    .into_iter()
+                    .filter(|name| tokens.contains_key(*name))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    published,
+                    vec![expected],
+                    "context {used} used, {percent:?}"
+                );
+            }
         }
     }
 
@@ -1313,8 +1325,9 @@ mod tests {
     fn a_context_severity_change_clears_the_name_it_moved_away_from() {
         let gauges = SidebarShape::from(crate::cli::SidebarLayout::Gauges);
         let mut tokens = BTreeMap::new();
-        apply_context(&mut tokens, &ContextUsage::new(31.0).unwrap(), 0, gauges);
-        apply_context(&mut tokens, &ContextUsage::new(85.0).unwrap(), 0, gauges);
+        let row = RowStyle::new(PercentStyle::Used, gauges);
+        apply_context(&mut tokens, &ContextUsage::new(31.0).unwrap(), 0, row);
+        apply_context(&mut tokens, &ContextUsage::new(85.0).unwrap(), 0, row);
         assert!(!tokens.contains_key("quota_context_normal"));
         assert_eq!(
             tokens.get("quota_context_danger").map(String::as_str),
@@ -1324,7 +1337,7 @@ mod tests {
             &mut tokens,
             &ContextUsage::new(85.0).unwrap(),
             0,
-            SidebarShape::default(),
+            RowStyle::default(),
         );
         assert_eq!(
             tokens.get("quota_context").map(String::as_str),
@@ -1336,31 +1349,34 @@ mod tests {
     }
 
     /// `packed` and `stacked` keep the plain uncoloured name they have always
-    /// published, whatever the context value is.
+    /// published, and the used percent they have always printed, whatever the
+    /// context value and whichever percent style the windows are drawn with.
     #[test]
     fn packed_and_stacked_keep_publishing_the_plain_context_token() {
         for layout in [
             crate::cli::SidebarLayout::Packed,
             crate::cli::SidebarLayout::Stacked,
         ] {
-            let mut tokens = BTreeMap::new();
-            apply_context(
-                &mut tokens,
-                &ContextUsage::new(85.0).unwrap(),
-                0,
-                SidebarShape::from(layout),
-            );
-            assert_eq!(
-                tokens.get("quota_context").map(String::as_str),
-                Some("context 85%"),
-                "{layout:?}"
-            );
-            for name in [
-                "quota_context_normal",
-                "quota_context_warning",
-                "quota_context_danger",
-            ] {
-                assert!(!tokens.contains_key(name), "{layout:?} wrote {name}");
+            for percent in [PercentStyle::Remaining, PercentStyle::Used] {
+                let mut tokens = BTreeMap::new();
+                apply_context(
+                    &mut tokens,
+                    &ContextUsage::new(85.0).unwrap(),
+                    0,
+                    RowStyle::new(percent, SidebarShape::from(layout)),
+                );
+                assert_eq!(
+                    tokens.get("quota_context").map(String::as_str),
+                    Some("context 85%"),
+                    "{layout:?} {percent:?}"
+                );
+                for name in [
+                    "quota_context_normal",
+                    "quota_context_warning",
+                    "quota_context_danger",
+                ] {
+                    assert!(!tokens.contains_key(name), "{layout:?} wrote {name}");
+                }
             }
         }
     }
@@ -1434,7 +1450,7 @@ mod tests {
             &mut tokens,
             &ContextUsage::new(12.0).unwrap(),
             0,
-            SidebarShape::default(),
+            RowStyle::default(),
         );
         assert_eq!(
             tokens.get("quota_context").map(String::as_str),

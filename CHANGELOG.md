@@ -11,16 +11,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A third sidebar layout, `gauges`: each quota field gets its own row with a
   meter beside the number, so remaining headroom reads as a bar length before
   any digit is read. Every bar fills to the number printed next to it, so the
-  `5h` and `7d` meters follow `quota-percent` (remaining by default) while the
-  `cntx` meter shows context consumed, which is what that number has always
-  reported. The meter sizes itself from the sidebar width Herdr is rendering —
+  `cntx`, `5h` and `7d` rows all print the one quantity `quota-percent` selects
+  (remaining by default), so the column reads as a single scale; `packed` and
+  `stacked` keep printing `context N%` as consumption.
+  The meter sizes itself from the sidebar width Herdr is rendering —
   eight cells at 26 columns, twelve at 30 or wider — and steps aside on a
   sidebar too narrow to hold it, leaving the row exactly as `stacked` renders
   it rather than truncating the number the bar labels. The bars live inside the
   values of the tokens the plugin already publishes. The one exception is the
   `cntx` row, which under `gauges` takes a severity color of its own on the same
-  green/amber/red scale as the window rows, thresholded on context used — amber
-  from 50%, red from 80% — and so adds the `quota_context_normal`,
+  green/amber/red scale as the window rows. Color always reads the headroom
+  left, never the number printed — amber below 50% of the context left, red
+  below 20% — and so adds the `quota_context_normal`,
   `quota_context_warning` and `quota_context_danger` token names. Only one of
   the three is ever filled, and the report stays inside Herdr's token budget.
   `packed` and `stacked` are unchanged, including their uncolored context row.

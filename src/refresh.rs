@@ -418,7 +418,7 @@ fn handle_named_pane(cache: &CacheStore, pane: AgentPane, topic_pane: Option<&st
     // what makes the alert land at the end of the turn that spent the quota
     // rather than at the next poll.
     notify_low_quota(cache, &tokens);
-    publish_pane_tokens(&panes, &tokens, CacheStore::now_millis(), shape)
+    publish_pane_tokens(&panes, &tokens, CacheStore::now_millis(), row)
 }
 
 /// The layout the user chose and the meter size their sidebar affords,
@@ -975,7 +975,7 @@ fn publish_resolved(
         }
     }
     notify_low_quota(cache, &tokens);
-    publish_pane_tokens(panes, &tokens, CacheStore::now_millis(), shape)
+    publish_pane_tokens(panes, &tokens, CacheStore::now_millis(), row)
 }
 
 /// The lowest headroom each provider is showing in this pass.
