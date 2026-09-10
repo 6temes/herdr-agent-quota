@@ -261,7 +261,7 @@ fn reversible_backup(
 /// The stored field set and brand choice come first: they are the ones that
 /// produced the rows on disk. The full defaults follow, so a configuration
 /// written before those settings existed is still recognised. Layout and row
-/// gap stay brute-forced — there are only four combinations, and neither is
+/// gap stay brute-forced — there are only six combinations, and neither is
 /// recoverable from a config this function is deciding whether to trust.
 fn matches_installed_quota_rows(
     original: &str,
@@ -274,7 +274,7 @@ fn matches_installed_quota_rows(
         variants.push((FieldSet::all(), BrandColors::On));
     }
     for (fields, brand) in variants {
-        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+        for layout in SidebarLayout::CHOICES {
             for gap in [SidebarRowGap::FLUSH, SidebarRowGap::SEPARATED] {
                 if add_quota_row_with(
                     original,
@@ -793,13 +793,11 @@ fn is_standalone_agent_row(row: &Array) -> bool {
 }
 
 fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
+    // Gauges shares packed's identity line and stacked's body: the identity is
+    // not a quota field so it stays compact, while a meter needs its own row
+    // per field. Both halves are shared rather than copied so they cannot drift.
     match layout {
-        SidebarLayout::Packed => rows.push(Value::Array(styled_row(
-            "$quota_provider_model",
-            None,
-            Some(true),
-            Some(false),
-        ))),
+        SidebarLayout::Packed | SidebarLayout::Gauges => append_identity_row(rows),
         SidebarLayout::Stacked => {
             rows.push(Value::Array(styled_row(
                 "$quota_provider",
@@ -814,12 +812,6 @@ fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
                 Some(false),
             )));
         }
-        SidebarLayout::Gauges => rows.push(Value::Array(styled_row(
-            "$quota_provider_model",
-            None,
-            Some(true),
-            Some(false),
-        ))),
     }
     rows.push(Value::Array(styled_row(
         "$quota_topic",
@@ -832,6 +824,15 @@ fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
         SidebarLayout::Packed => append_packed_quota_rows(rows),
         SidebarLayout::Stacked | SidebarLayout::Gauges => append_stacked_quota_rows(rows),
     }
+}
+
+fn append_identity_row(rows: &mut Array) {
+    rows.push(Value::Array(styled_row(
+        "$quota_provider_model",
+        None,
+        Some(true),
+        Some(false),
+    )));
 }
 
 fn append_packed_quota_rows(rows: &mut Array) {
@@ -1141,7 +1142,7 @@ mod tests {
         rows.insert(1, Value::Array(custom.clone()));
         let customized = document.to_string();
 
-        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+        for layout in SidebarLayout::CHOICES {
             for brand in [BrandColors::On, BrandColors::Off] {
                 let apply = |input: &str| {
                     add_quota_row_with(
@@ -1191,7 +1192,7 @@ mod tests {
             "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]\n",
             "[ui.sidebar.agents]\nrows = [[\"state_icon\", { token = \"tab\", bold = true }, \"$quota_provider_model\"], [\"$quota_topic\"]] # herdr-agent-quota-row\n",
         ] {
-            for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+            for layout in SidebarLayout::CHOICES {
                 let updated = add_quota_row_for(original, &[Harness::Claude], layout).unwrap();
                 let document = updated.parse::<DocumentMut>().unwrap();
                 for rows in [
@@ -1429,21 +1430,126 @@ rows = [["state_icon", "agent"]]
     }
 
     #[test]
-    fn switching_between_packed_and_stacked_is_idempotent() {
-        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"tab\", \"agent\"]]\n";
-        let packed = add_quota_row(original).unwrap();
-        let stacked =
-            add_quota_row_for(&packed, &AgentSelection::SUPPORTED, SidebarLayout::Stacked).unwrap();
-        let stacked_document = stacked.parse::<DocumentMut>().unwrap();
-        assert!(row_is_only_token(
-            stacked_document["ui"]["sidebar"]["agents"]["rows"]
+    fn gauges_layout_keeps_a_packed_identity_row_above_a_stacked_body() {
+        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n";
+        let updated =
+            add_quota_row_for(original, &AgentSelection::SUPPORTED, SidebarLayout::Gauges).unwrap();
+        let document = updated.parse::<DocumentMut>().unwrap();
+        for rows in [
+            document["ui"]["sidebar"]["agents"]["rows"]
                 .as_array()
                 .unwrap(),
-            "$quota_cache"
-        ));
-        let packed_again =
-            add_quota_row_for(&stacked, &AgentSelection::SUPPORTED, SidebarLayout::Packed).unwrap();
-        assert_eq!(packed_again, packed);
+            document["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"]
+                .as_array()
+                .unwrap(),
+        ] {
+            assert!(row_is_only_token(rows, "$quota_provider_model"));
+            assert!(!rows
+                .iter()
+                .any(|row| row_contains_token(row, "$quota_provider")));
+            assert!(!rows
+                .iter()
+                .any(|row| row_contains_token(row, "$quota_model")));
+            for token in [
+                "$quota_cache",
+                "$quota_cache_ttl",
+                "$quota_error",
+                "$quota_context",
+            ] {
+                assert!(row_is_only_token(rows, token), "{token} shares a row");
+            }
+            assert!(rows.iter().any(|row| {
+                row_contains_token(row, "$quota_5h_normal")
+                    && !row_contains_token(row, "$quota_week_normal")
+            }));
+            assert!(rows.iter().any(|row| {
+                row_contains_token(row, "$quota_week_normal")
+                    && row_contains_token(row, "$quota_week_inline_normal")
+                    && !row_contains_token(row, "$quota_5h_normal")
+            }));
+        }
+        assert_eq!(
+            remove_quota_row(
+                &add_quota_row_for("", &AgentSelection::SUPPORTED, SidebarLayout::Gauges).unwrap()
+            )
+            .unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn switching_between_any_two_layouts_is_idempotent() {
+        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"tab\", \"agent\"]]\n";
+        let apply = |input: &str, layout| {
+            add_quota_row_for(input, &AgentSelection::SUPPORTED, layout).unwrap()
+        };
+        for first in SidebarLayout::CHOICES {
+            for second in SidebarLayout::CHOICES {
+                let switched = apply(&apply(original, first), second);
+                assert_eq!(
+                    apply(&switched, second),
+                    switched,
+                    "{first:?} then {second:?} is not a fixed point"
+                );
+                assert_eq!(
+                    switched,
+                    apply(original, second),
+                    "{first:?} then {second:?} differs from a fresh {second:?} install"
+                );
+            }
+        }
+    }
+
+    /// The bytes `packed` and `stacked` write are the contract for every
+    /// installation that already exists: these digests were taken before
+    /// `gauges` was added, and a change to either is a defect.
+    #[test]
+    fn packed_and_stacked_write_the_same_bytes_as_before_gauges() {
+        use sha2::{Digest, Sha256};
+
+        for (original, expected) in [
+            (
+                "",
+                [
+                    "9209065bd93f9d5f6aa7786fa9cd5730d3e5ce61caeee510a99c0fee84700c0f",
+                    "6fa28ff4e54301637d40188c849aa161c9d5d55cbce21395f4ca94bc03d654fc",
+                ],
+            ),
+            (
+                "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]\n",
+                [
+                    "142675cea142ff8ec5b170668586f0cad5456c73fd0d6206a8b762ca60e25956",
+                    "96b87721865ede810f1b730820f20c39429f991aa95917090e5fe1f002d2d996",
+                ],
+            ),
+            (
+                "[ui.sidebar.agents]\nrows = [[\"state_icon\", { token = \"tab\", bold = true }, \"$quota_provider_model\"], [\"$quota_topic\"]] # herdr-agent-quota-row\n",
+                [
+                    "142675cea142ff8ec5b170668586f0cad5456c73fd0d6206a8b762ca60e25956",
+                    "96b87721865ede810f1b730820f20c39429f991aa95917090e5fe1f002d2d996",
+                ],
+            ),
+        ] {
+            for (layout, digest) in [SidebarLayout::Packed, SidebarLayout::Stacked]
+                .into_iter()
+                .zip(expected)
+            {
+                let updated = add_quota_row_with(
+                    original,
+                    &AgentSelection::SUPPORTED,
+                    layout,
+                    SidebarRowGap::default(),
+                    FieldSet::all(),
+                    BrandColors::On,
+                )
+                .unwrap();
+                assert_eq!(
+                    format!("{:x}", Sha256::digest(updated.as_bytes())),
+                    digest,
+                    "{layout:?} output changed:\n{updated}"
+                );
+            }
+        }
     }
 
     fn row_contains_token(row: &Value, token: &str) -> bool {
@@ -2173,6 +2279,38 @@ mod field_tests {
         )
         .unwrap();
         assert_eq!(once, twice);
+    }
+
+    /// The `gauges` body is stacked's, so a hidden field has to take its whole
+    /// row with it there too — and the identity row still has to survive
+    /// hiding the model.
+    #[test]
+    fn a_hidden_field_leaves_no_row_behind_in_gauges() {
+        let gauges = |fields| {
+            add_quota_row_with(
+                "",
+                &AgentSelection::SUPPORTED,
+                SidebarLayout::Gauges,
+                SidebarRowGap::default(),
+                fields,
+                BrandColors::On,
+            )
+            .unwrap()
+        };
+        let windowless = gauges(
+            FieldSet::all()
+                .toggled(SidebarField::FiveHour)
+                .toggled(SidebarField::Week),
+        );
+        assert!(!windowless.contains("$quota_5h"), "{windowless}");
+        assert!(!windowless.contains("$quota_week"), "{windowless}");
+        assert!(windowless.contains("$quota_context"), "{windowless}");
+        assert!(windowless.contains("$quota_provider_model"), "{windowless}");
+
+        let modelless = gauges(FieldSet::all().toggled(SidebarField::Model));
+        assert!(modelless.contains("$quota_provider\""), "{modelless}");
+        assert!(!modelless.contains("$quota_provider_model"), "{modelless}");
+        assert!(!modelless.contains("$quota_model"), "{modelless}");
     }
 
     /// Uninstall has to recognise rows written with a non-default selection,
