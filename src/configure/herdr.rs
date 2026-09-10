@@ -5,6 +5,7 @@ use crate::model::Harness;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
 const QUOTA_ROW_MARKERS: [&str; 40] = [
@@ -211,6 +212,55 @@ pub fn config_path() -> Result<PathBuf> {
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;
     Ok(PathBuf::from(home).join(".config/herdr/config.toml"))
+}
+
+/// Herdr's own documented defaults for the sidebar width keys, used whenever
+/// its config does not say (or says something unusable).
+pub(crate) const DEFAULT_SIDEBAR_WIDTH: usize = 26;
+pub(crate) const DEFAULT_SIDEBAR_MIN_WIDTH: usize = 18;
+pub(crate) const DEFAULT_SIDEBAR_MAX_WIDTH: usize = 36;
+/// No terminal is this wide, so a larger value is a typo rather than a choice.
+const MAX_PLAUSIBLE_SIDEBAR_WIDTH: i64 = 1_000;
+
+/// The sidebar width Herdr is configured to draw, clamped into its own
+/// configured minimum and maximum.
+///
+/// Cached for the life of the process: a refresh publishes many panes and the
+/// width is a configure-time choice, so one read is enough. Reading it here
+/// rather than persisting it at configure time means widening the sidebar
+/// lengthens the meter on the next refresh instead of after a repair.
+pub fn sidebar_width() -> usize {
+    static WIDTH: OnceLock<usize> = OnceLock::new();
+    *WIDTH.get_or_init(|| {
+        config_path()
+            .map(|path| read_sidebar_width(&path))
+            .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+    })
+}
+
+/// Strictly read-only: a refresh must never rewrite or reformat the user's
+/// config, and an unreadable or malformed one must not abort the refresh.
+fn read_sidebar_width(path: &Path) -> usize {
+    fs::read_to_string(path)
+        .map(|config| sidebar_width_in(&config))
+        .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+}
+
+fn sidebar_width_in(config: &str) -> usize {
+    let Ok(document) = config.parse::<DocumentMut>() else {
+        return DEFAULT_SIDEBAR_WIDTH;
+    };
+    let ui = document.get("ui").and_then(Item::as_table_like);
+    let width = |key: &str, default: usize| {
+        ui.and_then(|table| table.get(key))
+            .and_then(Item::as_integer)
+            .filter(|value| (1..=MAX_PLAUSIBLE_SIDEBAR_WIDTH).contains(value))
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(default)
+    };
+    let minimum = width("sidebar_min_width", DEFAULT_SIDEBAR_MIN_WIDTH);
+    let maximum = width("sidebar_max_width", DEFAULT_SIDEBAR_MAX_WIDTH).max(minimum);
+    width("sidebar_width", DEFAULT_SIDEBAR_WIDTH).clamp(minimum, maximum)
 }
 
 fn backup_path() -> Result<Option<PathBuf>> {
@@ -2322,6 +2372,73 @@ mod field_tests {
         assert!(
             matches_installed_quota_rows("", &installed, fields, BrandColors::Off).unwrap(),
             "{installed}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sidebar_width_tests {
+    use super::*;
+
+    #[test]
+    fn a_config_without_a_sidebar_width_reads_as_herdrs_documented_default() {
+        assert_eq!(sidebar_width_in(""), DEFAULT_SIDEBAR_WIDTH);
+        assert_eq!(sidebar_width_in("[ui]\ntheme = \"dark\"\n"), 26);
+    }
+
+    #[test]
+    fn a_configured_sidebar_width_is_read_as_written() {
+        assert_eq!(sidebar_width_in("[ui]\nsidebar_width = 30\n"), 30);
+        assert_eq!(sidebar_width_in("ui = { sidebar_width = 22 }\n"), 22);
+    }
+
+    /// A user's typo must cost them the default bar, never the refresh.
+    #[test]
+    fn an_unusable_sidebar_width_degrades_to_the_documented_default() {
+        for config in [
+            "[ui]\nsidebar_width = \"wide\"\n",
+            "[ui]\nsidebar_width = 26.5\n",
+            "[ui]\nsidebar_width = -8\n",
+            "[ui]\nsidebar_width = 0\n",
+            "[ui]\nsidebar_width = 99999999\n",
+            "[ui]\nsidebar_width = true\n",
+            "[ui\nsidebar_width = 30\n",
+            "sidebar_width = 30\n",
+        ] {
+            assert_eq!(sidebar_width_in(config), DEFAULT_SIDEBAR_WIDTH, "{config}");
+        }
+    }
+
+    #[test]
+    fn a_sidebar_width_outside_the_configured_bounds_is_clamped_into_them() {
+        assert_eq!(sidebar_width_in("[ui]\nsidebar_width = 48\n"), 36);
+        assert_eq!(sidebar_width_in("[ui]\nsidebar_width = 12\n"), 18);
+        assert_eq!(
+            sidebar_width_in("[ui]\nsidebar_width = 48\nsidebar_max_width = 40\n"),
+            40
+        );
+        assert_eq!(
+            sidebar_width_in("[ui]\nsidebar_width = 12\nsidebar_min_width = 10\n"),
+            12
+        );
+    }
+
+    #[test]
+    fn reading_the_sidebar_width_leaves_the_config_file_byte_identical() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let original = "# my herdr config\n[ui]\nsidebar_width   =    30\ntheme='dark'\n";
+        fs::write(&path, original).unwrap();
+        assert_eq!(read_sidebar_width(&path), 30);
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn an_unreadable_config_reads_as_the_documented_default() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(
+            read_sidebar_width(&directory.path().join("absent.toml")),
+            DEFAULT_SIDEBAR_WIDTH
         );
     }
 }
