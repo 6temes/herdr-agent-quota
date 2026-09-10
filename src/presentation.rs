@@ -124,6 +124,9 @@ pub struct MetadataTokens {
     pub quota_week: String,
     pub quota_week_severity: Option<Severity>,
     pub quota_context: String,
+    /// Reads context *used*, so it is high when the pane is in trouble — the
+    /// mirror of the window severities. Only `gauges` renders it.
+    pub quota_context_severity: Option<Severity>,
     pub quota_cache: String,
     pub quota_cache_ttl: String,
     /// A lapsed prompt cache (`no cached`). Normal, unlike `quota_error`.
@@ -250,6 +253,8 @@ impl MetadataTokens {
                 .unwrap_or_default(),
             quota_week_severity: long.map(|window| Severity::for_window(window, now_unix)),
             quota_context: sidebar_context(context, shape),
+            quota_context_severity: context
+                .map(|context| Severity::for_context_used(context.used_percent)),
             quota_cache: sidebar_cache(context),
             quota_cache_ttl: sidebar_cache_ttl(context, now_unix),
             quota_cache_state: sidebar_cache_state(context, now_unix),
@@ -274,6 +279,7 @@ impl MetadataTokens {
             quota_week: "7d N/A".to_string(),
             quota_week_severity: Some(Severity::Unknown),
             quota_context: String::new(),
+            quota_context_severity: None,
             quota_cache: String::new(),
             quota_cache_ttl: String::new(),
             quota_cache_state: String::new(),

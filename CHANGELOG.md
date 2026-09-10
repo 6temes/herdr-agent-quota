@@ -16,10 +16,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reported. The meter sizes itself from the sidebar width Herdr is rendering —
   eight cells at 26 columns, twelve at 30 or wider — and steps aside on a
   sidebar too narrow to hold it, leaving the row exactly as `stacked` renders
-  it rather than truncating the number the bar labels. The bars live inside the values of
-  the tokens the plugin already publishes, so no metadata token names are added
-  and the report budget and severity colors are untouched. `packed` and
-  `stacked` are unchanged. Select it with `configure --sidebar-layout gauges`,
+  it rather than truncating the number the bar labels. The bars live inside the
+  values of the tokens the plugin already publishes. The one exception is the
+  `cntx` row, which under `gauges` takes a severity color of its own on the same
+  green/amber/red scale as the window rows, thresholded on context used — amber
+  from 50%, red from 80% — and so adds the `quota_context_normal`,
+  `quota_context_warning` and `quota_context_danger` token names. Only one of
+  the three is ever filled, and the report stays inside Herdr's token budget.
+  `packed` and `stacked` are unchanged, including their uncolored context row.
+  Select it with `configure --sidebar-layout gauges`,
   `./install.sh --sidebar-layout gauges`, or the settings pane's Layout row.
 
 ## [1.5.2] - 2026-09-08

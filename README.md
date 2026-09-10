@@ -26,7 +26,9 @@ printed next to it, so the `5h` and `7d` bars follow the percentage style you
 choose while the `cntx` bar always shows context used. The meter is sized from
 the sidebar width Herdr is rendering — the width it auto-scaled to, or
 `ui.sidebar_width` if it has recorded none — and is dropped, never truncated,
-on a sidebar too narrow to hold it.
+on a sidebar too narrow to hold it. Under `gauges` the `cntx` row takes a
+severity colour of its own, on the same green/amber/red scale as `5h` and `7d`
+but thresholded on context used: amber from 50%, red from 80%.
 
 ## Install and upgrade
 
