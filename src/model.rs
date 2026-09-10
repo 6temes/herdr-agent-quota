@@ -929,6 +929,16 @@ pub fn format_percent(value: f64) -> String {
     format!("{value:.0}")
 }
 
+/// The whole number the sidebar prints, for callers that must agree with it —
+/// the gauges meter derives its cell count from this.
+///
+/// Read back out of [`format_percent`] rather than rounded again: `{:.0}`
+/// rounds half to even while `f64::round` rounds half away from zero, so an
+/// exactly-reachable 18.5% would otherwise draw a two-cell bar beside `18%`.
+pub fn printed_percent(value: f64) -> u32 {
+    format_percent(value).parse().unwrap_or(0)
+}
+
 #[derive(Debug, Error)]
 pub enum ModelError {
     #[error("unknown provider: {0}")]
