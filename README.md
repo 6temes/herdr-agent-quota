@@ -8,10 +8,11 @@ Model, context, prompt-cache usage, and subscription quota in Herdr's Agent side
 [简体中文](README.zh-CN.md)
 
 <table>
-<tr><th>packed (default)</th><th>stacked</th></tr>
+<tr><th>packed (default)</th><th>stacked</th><th>gauges</th></tr>
 <tr>
 <td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="Packed sidebar" width="284"></td>
 <td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="Stacked sidebar" width="177"></td>
+<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="Gauges sidebar" width="284"></td>
 </tr>
 </table>
 
@@ -20,6 +21,11 @@ and worktree grouping. The branded provider/model line is the agent identity;
 the native `agent` row is omitted so `grok` does not sit above `Grok/grok-4.6`.
 Optional quota ordering and low-quota notifications are disabled by default.
 Empty fields collapse; percentages can show remaining or used quota.
+`gauges` puts a meter beside each quota number. Every bar fills to the number
+printed next to it, so the `5h` and `7d` bars follow the percentage style you
+choose while the `cntx` bar always shows context used. The meter is sized from
+Herdr's `ui.sidebar_width` and is dropped, never truncated, on a sidebar too
+narrow to hold it.
 
 ## Install and upgrade
 
@@ -61,7 +67,7 @@ herdr plugin pane open --plugin herdr-agent-quota --entrypoint settings --focus
 | Setting | Options |
 | --- | --- |
 | Percentages | Remaining or used; colors always indicate remaining headroom |
-| Layout | `packed` groups related fields; `stacked` gives each field a row |
+| Layout | `packed` groups related fields; `stacked` gives each field a row; `gauges` adds a meter beside each quota number |
 | Row gap | Zero or one blank line between agents |
 | Watch interval | 30 seconds–1 hour; default 60 seconds |
 | Fields | Topic, model, cache, TTL, context, short/long quota |
@@ -113,6 +119,7 @@ turn failures into zero usage.
 | Devin quota is missing | Check the CLI login and `DEVIN_CREDENTIALS_FILE` if customized |
 | Rows are missing | Run the configure action below to repair managed configuration |
 | Packed rows are truncated | Select `stacked` |
+| The `gauges` meter disappears on a narrow sidebar | Widen it (`ui.sidebar_width`) or select `stacked` |
 
 ```sh
 herdr plugin action invoke refresh --plugin herdr-agent-quota

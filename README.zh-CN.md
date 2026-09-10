@@ -8,10 +8,11 @@
 [English](README.md)
 
 <table>
-<tr><th>packed（默认）</th><th>stacked</th></tr>
+<tr><th>packed（默认）</th><th>stacked</th><th>gauges</th></tr>
 <tr>
 <td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="拼接布局" width="284"></td>
 <td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="分行布局" width="177"></td>
+<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="进度条布局" width="284"></td>
 </tr>
 </table>
 
@@ -19,6 +20,9 @@
 带品牌色的 provider/model 行就是 agent 身份，因此不再保留灰色的原生 `agent` 行，
 避免 `grok` 叠在 `Grok/grok-4.6` 上面。按额度排序和低额度通知默认关闭。
 空字段自动折叠，百分比可选择显示剩余或已用额度。
+`gauges` 在每个额度数字旁加一条进度条。进度条长度始终对应旁边打印的数字：
+`5h`、`7d` 跟随所选的百分比口径，`cntx` 则始终表示已用的上下文。
+进度条按 Herdr 的 `ui.sidebar_width` 自动定长；侧栏太窄时直接不画进度条，不会截断内容。
 
 ## 安装与升级
 
@@ -57,7 +61,7 @@ herdr plugin pane open --plugin herdr-agent-quota --entrypoint settings --focus
 | 设置 | 可选项 |
 | --- | --- |
 | Percentages | 剩余或已用比例；颜色始终表示剩余额度 |
-| Layout | `packed` 合并相关字段，`stacked` 将字段分行显示 |
+| Layout | `packed` 合并相关字段，`stacked` 将字段分行显示，`gauges` 在每个额度数字旁加进度条 |
 | Row gap | Agent 之间保留零行或一行空白 |
 | Watch interval | 30 秒–1 小时，默认 60 秒 |
 | Fields | 主题、模型、缓存、TTL、上下文、短期／长期额度 |
@@ -103,6 +107,7 @@ Claude/Agy 没有可靠的服务账号 ID，因此不跨会话共享观测值。
 | Devin 缺少额度 | 检查 CLI 登录；使用自定义路径时检查 `DEVIN_CREDENTIALS_FILE` |
 | 缺少侧栏行 | 运行下面的 configure action 修复插件配置 |
 | packed 内容被截断 | 选择 `stacked` |
+| 侧栏太窄，`gauges` 不显示进度条 | 调大 `ui.sidebar_width`，或选择 `stacked` |
 
 ```sh
 herdr plugin action invoke refresh --plugin herdr-agent-quota
