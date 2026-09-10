@@ -12,7 +12,7 @@
 <tr>
 <td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="拼接布局" width="284"></td>
 <td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="分行布局" width="177"></td>
-<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="进度条布局" width="284"></td>
+<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="进度条布局" width="306"></td>
 </tr>
 </table>
 

@@ -12,7 +12,7 @@ Model, context, prompt-cache usage, and subscription quota in Herdr's Agent side
 <tr>
 <td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="Packed sidebar" width="284"></td>
 <td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="Stacked sidebar" width="177"></td>
-<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="Gauges sidebar" width="284"></td>
+<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="Gauges sidebar" width="306"></td>
 </tr>
 </table>
 
