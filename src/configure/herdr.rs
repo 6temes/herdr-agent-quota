@@ -5,7 +5,6 @@ use crate::model::Harness;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
 const QUOTA_ROW_MARKERS: [&str; 40] = [
@@ -222,45 +221,104 @@ pub(crate) const DEFAULT_SIDEBAR_MAX_WIDTH: usize = 36;
 /// No terminal is this wide, so a larger value is a typo rather than a choice.
 const MAX_PLAUSIBLE_SIDEBAR_WIDTH: i64 = 1_000;
 
-/// The sidebar width Herdr is configured to draw, clamped into its own
-/// configured minimum and maximum.
+/// The sidebar width Herdr is drawing, clamped into its own configured
+/// minimum and maximum.
 ///
-/// Cached for the life of the process: a refresh publishes many panes and the
-/// width is a configure-time choice, so one read is enough. Reading it here
-/// rather than persisting it at configure time means widening the sidebar
-/// lengthens the meter on the next refresh instead of after a repair.
+/// Herdr auto-scales the sidebar and persists the width it settled on in its
+/// client-shell state, so that file describes the sidebar the user is looking
+/// at; `ui.sidebar_width` is a request they may never have made. Client state
+/// therefore wins, config is the second source, and Herdr's documented
+/// default the last.
+///
+/// Read live on every refresh pass rather than cached: the watcher is
+/// long-lived and each hook is its own process, so a cached width would let
+/// the two publish different meter widths for the same pane.
 pub fn sidebar_width() -> usize {
-    static WIDTH: OnceLock<usize> = OnceLock::new();
-    *WIDTH.get_or_init(|| {
-        config_path()
-            .map(|path| read_sidebar_width(&path))
-            .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
-    })
+    let config = config_path()
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let (configured, minimum, maximum) = sidebar_width_settings(&config);
+    client_shell_sidebar_width()
+        .or(configured)
+        .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+        .clamp(minimum, maximum)
+}
+
+/// Where Herdr's client shell persists the width it rendered. Every failure
+/// along the way — no state directory, no file, unreadable, malformed JSON,
+/// missing or non-integer key — degrades to the next width source.
+fn client_shell_sidebar_width() -> Option<usize> {
+    let state = client_shell_state_dir()?;
+    let file = newest_json_file(&state)?;
+    let contents = fs::read_to_string(file).ok()?;
+    client_shell_width_for_config(&contents)
+}
+
+fn client_shell_state_dir() -> Option<PathBuf> {
+    if let Some(state) = std::env::var_os("XDG_STATE_HOME") {
+        if !state.is_empty() {
+            return Some(PathBuf::from(state).join("herdr/client-shell"));
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".local/state/herdr/client-shell"))
+}
+
+/// The state file is named for the client session (`local-<hash>.json`), so
+/// the most recently written one is the shell whose width is current.
+fn newest_json_file(directory: &Path) -> Option<PathBuf> {
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(directory).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let better = match &newest {
+            Some((best, best_path)) => (modified, &path) > (*best, best_path),
+            None => true,
+        };
+        if better {
+            newest = Some((modified, path));
+        }
+    }
+    newest.map(|(_, path)| path)
+}
+
+fn client_shell_width_for_config(state: &str) -> Option<usize> {
+    let value: serde_json::Value = serde_json::from_str(state).ok()?;
+    let width = value.get("sidebar_width")?.as_i64()?;
+    (1..=MAX_PLAUSIBLE_SIDEBAR_WIDTH)
+        .contains(&width)
+        .then(|| usize::try_from(width).ok())
+        .flatten()
 }
 
 /// Strictly read-only: a refresh must never rewrite or reformat the user's
 /// config, and an unreadable or malformed one must not abort the refresh.
-fn read_sidebar_width(path: &Path) -> usize {
-    fs::read_to_string(path)
-        .map(|config| sidebar_width_in(&config))
-        .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
-}
-
-fn sidebar_width_in(config: &str) -> usize {
+///
+/// The configured width if the config states a usable one, and the bounds any
+/// width — wherever it came from — is clamped into.
+fn sidebar_width_settings(config: &str) -> (Option<usize>, usize, usize) {
     let Ok(document) = config.parse::<DocumentMut>() else {
-        return DEFAULT_SIDEBAR_WIDTH;
+        return (None, DEFAULT_SIDEBAR_MIN_WIDTH, DEFAULT_SIDEBAR_MAX_WIDTH);
     };
     let ui = document.get("ui").and_then(Item::as_table_like);
-    let width = |key: &str, default: usize| {
+    let width = |key: &str| {
         ui.and_then(|table| table.get(key))
             .and_then(Item::as_integer)
             .filter(|value| (1..=MAX_PLAUSIBLE_SIDEBAR_WIDTH).contains(value))
             .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(default)
     };
-    let minimum = width("sidebar_min_width", DEFAULT_SIDEBAR_MIN_WIDTH);
-    let maximum = width("sidebar_max_width", DEFAULT_SIDEBAR_MAX_WIDTH).max(minimum);
-    width("sidebar_width", DEFAULT_SIDEBAR_WIDTH).clamp(minimum, maximum)
+    let minimum = width("sidebar_min_width").unwrap_or(DEFAULT_SIDEBAR_MIN_WIDTH);
+    let maximum = width("sidebar_max_width")
+        .unwrap_or(DEFAULT_SIDEBAR_MAX_WIDTH)
+        .max(minimum);
+    (width("sidebar_width"), minimum, maximum)
 }
 
 fn backup_path() -> Result<Option<PathBuf>> {
@@ -1131,9 +1189,17 @@ fn print_diff_hint(layout: SidebarLayout, fields: FieldSet, brand: BrandColors) 
                 "  show provider, model, the user prompt, then cache, TTL, context, 5h, and 7d on their own rows"
             );
         }
-        SidebarLayout::Gauges => {
+        SidebarLayout::Gauges if crate::presentation::meter_cells(sidebar_width()).is_some() => {
             println!(
                 "  show the user prompt, then cache, TTL, context, 5h, and 7d on their own rows, each with a meter beside the number"
+            );
+        }
+        SidebarLayout::Gauges => {
+            println!(
+                "  show the user prompt, then cache, TTL, context, 5h, and 7d on their own rows"
+            );
+            println!(
+                "  draw no meter: this sidebar is too narrow for one, so the rows render as they do under stacked"
             );
         }
     }
@@ -2382,14 +2448,14 @@ mod sidebar_width_tests {
 
     #[test]
     fn a_config_without_a_sidebar_width_reads_as_herdrs_documented_default() {
-        assert_eq!(sidebar_width_in(""), DEFAULT_SIDEBAR_WIDTH);
-        assert_eq!(sidebar_width_in("[ui]\ntheme = \"dark\"\n"), 26);
+        assert_eq!(width_for_config(""), DEFAULT_SIDEBAR_WIDTH);
+        assert_eq!(width_for_config("[ui]\ntheme = \"dark\"\n"), 26);
     }
 
     #[test]
     fn a_configured_sidebar_width_is_read_as_written() {
-        assert_eq!(sidebar_width_in("[ui]\nsidebar_width = 30\n"), 30);
-        assert_eq!(sidebar_width_in("ui = { sidebar_width = 22 }\n"), 22);
+        assert_eq!(width_for_config("[ui]\nsidebar_width = 30\n"), 30);
+        assert_eq!(width_for_config("ui = { sidebar_width = 22 }\n"), 22);
     }
 
     /// A user's typo must cost them the default bar, never the refresh.
@@ -2405,21 +2471,115 @@ mod sidebar_width_tests {
             "[ui\nsidebar_width = 30\n",
             "sidebar_width = 30\n",
         ] {
-            assert_eq!(sidebar_width_in(config), DEFAULT_SIDEBAR_WIDTH, "{config}");
+            assert_eq!(width_for_config(config), DEFAULT_SIDEBAR_WIDTH, "{config}");
         }
     }
 
     #[test]
     fn a_sidebar_width_outside_the_configured_bounds_is_clamped_into_them() {
-        assert_eq!(sidebar_width_in("[ui]\nsidebar_width = 48\n"), 36);
-        assert_eq!(sidebar_width_in("[ui]\nsidebar_width = 12\n"), 18);
+        assert_eq!(width_for_config("[ui]\nsidebar_width = 48\n"), 36);
+        assert_eq!(width_for_config("[ui]\nsidebar_width = 12\n"), 18);
         assert_eq!(
-            sidebar_width_in("[ui]\nsidebar_width = 48\nsidebar_max_width = 40\n"),
+            width_for_config("[ui]\nsidebar_width = 48\nsidebar_max_width = 40\n"),
             40
         );
         assert_eq!(
-            sidebar_width_in("[ui]\nsidebar_width = 12\nsidebar_min_width = 10\n"),
+            width_for_config("[ui]\nsidebar_width = 12\nsidebar_min_width = 10\n"),
             12
+        );
+    }
+
+    /// The width sources in precedence order: what Herdr rendered, then what
+    /// the config asked for, then the documented default.
+    #[test]
+    fn client_shell_state_outranks_the_config_which_outranks_the_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config.toml");
+        let state = directory.path().join("state");
+        let shell = state.join("herdr/client-shell");
+        fs::create_dir_all(&shell).unwrap();
+        fs::write(&config, "[ui]\nsidebar_width = 30\n").unwrap();
+
+        with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 30));
+
+        fs::write(shell.join("local-abc.json"), "{\"sidebar_width\": 22}").unwrap();
+        with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 22));
+
+        fs::remove_file(&config).unwrap();
+        with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 22));
+
+        fs::remove_file(shell.join("local-abc.json")).unwrap();
+        with_width_sources(&config, &state, || {
+            assert_eq!(sidebar_width(), DEFAULT_SIDEBAR_WIDTH)
+        });
+    }
+
+    /// Whatever source the width came from, it lands inside the bounds the
+    /// config sets.
+    #[test]
+    fn a_client_shell_width_outside_the_configured_bounds_is_clamped_into_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config.toml");
+        let state = directory.path().join("state");
+        let shell = state.join("herdr/client-shell");
+        fs::create_dir_all(&shell).unwrap();
+        fs::write(&config, "[ui]\nsidebar_max_width = 32\n").unwrap();
+        fs::write(shell.join("local-abc.json"), "{\"sidebar_width\": 48}").unwrap();
+        with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 32));
+    }
+
+    /// A state file the plugin cannot make sense of costs the meter nothing:
+    /// the next source answers instead.
+    #[test]
+    fn an_unusable_client_shell_state_falls_through_to_the_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config.toml");
+        let state = directory.path().join("state");
+        let shell = state.join("herdr/client-shell");
+        fs::create_dir_all(&shell).unwrap();
+        fs::write(&config, "[ui]\nsidebar_width = 30\n").unwrap();
+        for contents in [
+            "",
+            "not json at all",
+            "{\"agent_panel_sort\": \"priority\"}",
+            "{\"sidebar_width\": \"35\"}",
+            "{\"sidebar_width\": 35.5}",
+            "{\"sidebar_width\": 0}",
+            "{\"sidebar_width\": -8}",
+            "{\"sidebar_width\": 99999999}",
+            "[35]",
+        ] {
+            fs::write(shell.join("local-abc.json"), contents).unwrap();
+            with_width_sources(&config, &state, || {
+                assert_eq!(sidebar_width(), 30, "{contents}")
+            });
+        }
+    }
+
+    /// Herdr names the file after the client session, so the plugin reads the
+    /// newest one rather than a name it cannot know.
+    #[test]
+    fn the_newest_state_file_is_the_one_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let shell = directory.path().join("herdr/client-shell");
+        fs::create_dir_all(&shell).unwrap();
+        fs::write(shell.join("local-old.json"), "{\"sidebar_width\": 22}").unwrap();
+        fs::write(shell.join("notes.txt"), "{\"sidebar_width\": 30}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(shell.join("local-new.json"), "{\"sidebar_width\": 35}").unwrap();
+        let absent = directory.path().join("absent.toml");
+        with_width_sources(&absent, directory.path(), || {
+            assert_eq!(sidebar_width(), 35)
+        });
+    }
+
+    #[test]
+    fn an_absent_config_and_state_directory_read_as_the_documented_default() {
+        let directory = tempfile::tempdir().unwrap();
+        with_width_sources(
+            &directory.path().join("absent.toml"),
+            &directory.path().join("absent-state"),
+            || assert_eq!(sidebar_width(), DEFAULT_SIDEBAR_WIDTH),
         );
     }
 
@@ -2429,16 +2589,34 @@ mod sidebar_width_tests {
         let path = directory.path().join("config.toml");
         let original = "# my herdr config\n[ui]\nsidebar_width   =    30\ntheme='dark'\n";
         fs::write(&path, original).unwrap();
-        assert_eq!(read_sidebar_width(&path), 30);
+        with_width_sources(&path, &directory.path().join("absent-state"), || {
+            assert_eq!(sidebar_width(), 30)
+        });
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
     }
 
-    #[test]
-    fn an_unreadable_config_reads_as_the_documented_default() {
+    /// The width a config alone resolves to, with no client-shell state for
+    /// it to lose to.
+    fn width_for_config(config: &str) -> usize {
         let directory = tempfile::tempdir().unwrap();
-        assert_eq!(
-            read_sidebar_width(&directory.path().join("absent.toml")),
-            DEFAULT_SIDEBAR_WIDTH
+        let path = directory.path().join("config.toml");
+        fs::write(&path, config).unwrap();
+        let mut width = 0;
+        with_width_sources(&path, &directory.path().join("absent-state"), || {
+            width = sidebar_width()
+        });
+        width
+    }
+
+    /// Both width sources are process-global environment lookups, so they
+    /// move under the one env lock.
+    fn with_width_sources(config: &Path, state: &Path, body: impl FnOnce()) {
+        crate::prefs::testing::with_env(
+            &[
+                ("HERDR_CONFIG_FILE", Some(config.as_os_str())),
+                ("XDG_STATE_HOME", Some(state.as_os_str())),
+            ],
+            body,
         );
     }
 }

@@ -18,17 +18,17 @@ const MAX_METER_CELLS: usize = 12;
 /// columns it costs, so the row keeps its non-gauge shape instead.
 const MIN_METER_CELLS: usize = 4;
 // `\u{25b0}` and `\u{25b1}` are East-Asian-Width Neutral, so both are one
-// column wide in a CJK locale and identical in width to each other (KTD9).
+// column wide in a CJK locale and identical in width to each other.
 const METER_FILLED: char = '\u{25b0}';
 const METER_EMPTY: char = '\u{25b1}';
 /// The gauges label column. A longer label renders through the non-gauge
-/// shape rather than being truncated (R4).
+/// shape rather than being truncated.
 const GAUGE_LABEL_WIDTH: usize = 4;
-/// `context` does not fit the label column; `cntx` does, and only here (KTD3).
+/// `context` does not fit the label column; `cntx` does, and only here.
 const GAUGE_CONTEXT_LABEL: &str = "cntx";
 /// How many meter cells a window row can afford at `sidebar_width` columns,
 /// or `None` when the row should render through its existing non-gauge shape
-/// rather than lose the number the bar labels to truncation (KTD10).
+/// rather than lose the number the bar labels to truncation.
 pub(crate) fn meter_cells(sidebar_width: usize) -> Option<usize> {
     let width = sidebar_width.clamp(DEFAULT_SIDEBAR_MIN_WIDTH, DEFAULT_SIDEBAR_MAX_WIDTH);
     let cells = width
@@ -55,6 +55,22 @@ impl SidebarShape {
     }
 }
 
+/// The two rendering knobs a pane's tokens are drawn with: whether a percent
+/// reads remaining or used, and the shape of the row it sits in. They are
+/// chosen together once per refresh pass and never vary between panes, so
+/// they travel as one value rather than as two parallel parameters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowStyle {
+    pub percent: PercentStyle,
+    pub shape: SidebarShape,
+}
+
+impl RowStyle {
+    pub fn new(percent: PercentStyle, shape: SidebarShape) -> Self {
+        Self { percent, shape }
+    }
+}
+
 impl From<SidebarLayout> for SidebarShape {
     fn from(layout: SidebarLayout) -> Self {
         Self {
@@ -64,7 +80,7 @@ impl From<SidebarLayout> for SidebarShape {
     }
 }
 
-/// A meter that agrees with the integer printed beside it (KTD11): only 0
+/// A meter that agrees with the integer printed beside it: only 0
 /// draws an empty bar and only 100 draws a full one, so a window with quota
 /// left never reads as spent.
 fn meter(printed: u32, cells: usize) -> String {
@@ -81,7 +97,7 @@ fn meter(printed: u32, cells: usize) -> String {
 
 /// How many meter cells a row labelled `label` draws, or `None` when it keeps
 /// its existing non-gauge shape: another layout, a sidebar too narrow for a
-/// bar (R13), or a label that would not fit the label column (R4).
+/// bar, or a label that would not fit the label column.
 fn gauge_cells(shape: SidebarShape, label: &str) -> Option<usize> {
     match shape.layout {
         SidebarLayout::Packed | SidebarLayout::Stacked => None,
@@ -377,7 +393,7 @@ pub(crate) fn sidebar_context(
         return String::new();
     };
     // The context meter reads used because this row has always printed used;
-    // the bar and the number must never disagree (KTD2).
+    // the bar and the number must never disagree.
     match gauge_cells(shape, GAUGE_CONTEXT_LABEL) {
         Some(cells) => format!(
             "{GAUGE_CONTEXT_LABEL} {} {:>3}%",
@@ -1307,7 +1323,7 @@ mod tests {
         assert_eq!(values.quota_cache, "cache 99.2%");
     }
 
-    /// KTD10's table: the bar shortens with the sidebar and disappears rather
+    /// The bar shortens with the sidebar and disappears rather
     /// than truncating the number it labels.
     #[test]
     fn the_meter_cell_count_follows_the_configured_sidebar_width() {
@@ -1323,6 +1339,54 @@ mod tests {
         assert_eq!(meter_cells(0), meter_cells(18));
         assert_eq!(meter_cells(12), meter_cells(18));
         assert_eq!(meter_cells(48), meter_cells(36));
+    }
+
+    /// At the narrowest meter the clamp does all the work: one spent cell
+    /// cannot read as empty, and one unspent cell cannot read as full.
+    #[test]
+    fn the_narrowest_meter_still_separates_almost_empty_from_almost_full() {
+        assert_eq!(
+            meter(1, MIN_METER_CELLS),
+            "\u{25b0}\u{25b1}\u{25b1}\u{25b1}"
+        );
+        assert_eq!(
+            meter(99, MIN_METER_CELLS),
+            "\u{25b0}\u{25b0}\u{25b0}\u{25b1}"
+        );
+        assert_eq!(
+            meter(0, MIN_METER_CELLS),
+            "\u{25b1}\u{25b1}\u{25b1}\u{25b1}"
+        );
+        assert_eq!(
+            meter(100, MIN_METER_CELLS),
+            "\u{25b0}\u{25b0}\u{25b0}\u{25b0}"
+        );
+    }
+
+    /// `METER_ROW_OVERHEAD` budgets six columns for the ETA, so every reset a
+    /// provider can plausibly quote has to print within six. Past 99 days it
+    /// does not, and the meter would then be one column too long.
+    #[test]
+    fn a_reset_eta_prints_within_the_six_columns_the_row_overhead_budgets() {
+        for seconds in [
+            0,
+            1,
+            59,
+            60,
+            59 * 60 + 59,
+            60 * 60,
+            23 * 60 * 60 + 59 * 60,
+            24 * 60 * 60,
+            29 * 24 * 60 * 60 + 23 * 60 * 60,
+            99 * 24 * 60 * 60 + 23 * 60 * 60,
+        ] {
+            let printed = format_duration(seconds);
+            assert!(
+                printed.chars().count() <= 6,
+                "{seconds}s printed as {printed}"
+            );
+        }
+        assert_eq!(format_duration(1_000 * 24 * 60 * 60), "1000d0h");
     }
 
     #[test]
@@ -1341,7 +1405,7 @@ mod tests {
     }
 
     /// Eight cells, the default 26-column sidebar. The bar fills to the
-    /// number beside it (KTD2): 81% remaining draws a bar 81% full.
+    /// number beside it: 81% remaining draws a bar 81% full.
     #[test]
     fn the_gauges_meter_fills_to_the_remaining_number_it_prints() {
         let snapshot = ProviderSnapshot::new(
@@ -1394,7 +1458,7 @@ mod tests {
     }
 
     /// Eight cells. The context meter reads used whatever the percent style
-    /// says (KTD2), and `cntx` exists only under `gauges` (KTD3).
+    /// says, and `cntx` exists only under `gauges`.
     #[test]
     fn the_context_meter_reads_used_and_is_labelled_cntx_only_under_gauges() {
         let snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
@@ -1446,7 +1510,7 @@ mod tests {
     }
 
     /// Eight cells. Only 0 may draw nothing and only 100 may draw everything,
-    /// so a window with quota left never looks spent (R5).
+    /// so a window with quota left never looks spent.
     #[test]
     fn only_zero_draws_an_empty_meter_and_only_a_hundred_draws_a_full_one() {
         assert_eq!(
@@ -1494,7 +1558,7 @@ mod tests {
     }
 
     /// Twelve cells at 36 columns; none at 18, where the row must be exactly
-    /// what `stacked` publishes rather than a truncated meter (R13).
+    /// what `stacked` publishes rather than a truncated meter.
     #[test]
     fn a_wider_sidebar_lengthens_the_meter_and_a_narrow_one_drops_it() {
         let snapshot = ProviderSnapshot::new(
@@ -1533,7 +1597,7 @@ mod tests {
     }
 
     /// `missing_five_hour_severity` finds the placeholder by string equality,
-    /// so padding its label would silently drop the Unknown severity (KTD14).
+    /// so padding its label would silently drop the Unknown severity.
     #[test]
     fn the_missing_five_hour_placeholder_is_byte_identical_under_every_layout() {
         let snapshot = ProviderSnapshot::new(
@@ -1564,7 +1628,7 @@ mod tests {
 
     /// A label wider than the four-character column keeps the whole row on
     /// the non-gauge shape, because truncating a label is worse than
-    /// dropping a bar (R4).
+    /// dropping a bar.
     #[test]
     fn a_label_too_long_for_the_gauges_column_keeps_the_non_gauge_shape() {
         let mut snapshot = ProviderSnapshot::new(
@@ -1607,7 +1671,7 @@ mod tests {
     }
 
     /// Herdr joins sibling tokens with ` \u{b7} `, so a value carrying one
-    /// reads as two tokens; and no value may approach the token budget (R12).
+    /// reads as two tokens; and no value may approach the token budget.
     #[test]
     fn no_gauges_token_carries_a_separator_or_approaches_the_token_budget() {
         let snapshot = ProviderSnapshot::new(

@@ -24,8 +24,9 @@ Empty fields collapse; percentages can show remaining or used quota.
 `gauges` puts a meter beside each quota number. Every bar fills to the number
 printed next to it, so the `5h` and `7d` bars follow the percentage style you
 choose while the `cntx` bar always shows context used. The meter is sized from
-Herdr's `ui.sidebar_width` and is dropped, never truncated, on a sidebar too
-narrow to hold it.
+the sidebar width Herdr is rendering — the width it auto-scaled to, or
+`ui.sidebar_width` if it has recorded none — and is dropped, never truncated,
+on a sidebar too narrow to hold it.
 
 ## Install and upgrade
 
@@ -119,7 +120,7 @@ turn failures into zero usage.
 | Devin quota is missing | Check the CLI login and `DEVIN_CREDENTIALS_FILE` if customized |
 | Rows are missing | Run the configure action below to repair managed configuration |
 | Packed rows are truncated | Select `stacked` |
-| The `gauges` meter disappears on a narrow sidebar | Widen it (`ui.sidebar_width`) or select `stacked` |
+| The `gauges` meter disappears on a narrow sidebar | Widen the sidebar, or select `stacked` |
 
 ```sh
 herdr plugin action invoke refresh --plugin herdr-agent-quota

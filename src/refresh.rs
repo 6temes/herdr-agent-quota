@@ -1,5 +1,5 @@
 use crate::cache::CacheStore;
-use crate::cli::{AgentSelection, LowQuotaAlert, PercentStyle};
+use crate::cli::{AgentSelection, LowQuotaAlert};
 use crate::herdr::{
     current_focused_pane, list_agent_panes, list_agent_state, plugin_quota_present,
     publish_pane_tokens, refresh_pane_topic, AgentPane, PaneQuotaUpdate, PaneTokens,
@@ -9,7 +9,7 @@ use crate::model::{
 };
 use crate::omp::OmpEvidence;
 use crate::opencode::OpenCodePaths;
-use crate::presentation::{MetadataTokens, SidebarShape};
+use crate::presentation::{MetadataTokens, RowStyle, SidebarShape};
 use crate::providers::statusline::enrich_cache_session;
 use crate::providers::{codex, devin, grok, omp as omp_provider, opencode_go};
 use crate::route;
@@ -400,15 +400,14 @@ fn handle_named_pane(cache: &CacheStore, pane: AgentPane, topic_pane: Option<&st
             refresh_selected(cache, &[provider], false, &panes)?;
         }
     }
-    let style = cache.percent_style().unwrap_or_default();
     let shape = sidebar_shape(cache);
+    let row = RowStyle::new(cache.percent_style().unwrap_or_default(), shape);
     let tokens = resolved_pane_tokens(
         cache,
         &mut panes[0],
         resolved,
         CacheStore::now_unix(),
-        style,
-        shape,
+        row,
         false,
     )?
     .into_iter()
@@ -437,8 +436,7 @@ fn resolved_pane_tokens(
     pane: &mut AgentPane,
     resolved: route::ResolvedPane,
     now: u64,
-    style: PercentStyle,
-    shape: SidebarShape,
+    row: RowStyle,
     force: bool,
 ) -> Result<Option<PaneTokens>> {
     let route::ResolvedPane {
@@ -451,7 +449,7 @@ fn resolved_pane_tokens(
         Resolution::Subscription(target)
             if target.credential_scope == CredentialScope::OMP_STORE =>
         {
-            omp_quota(cache, &target, omp.as_ref(), now, style, shape, force)
+            omp_quota(cache, &target, omp.as_ref(), now, row, force)
         }
         Resolution::Subscription(target) => {
             if let Some(provider) = target.original_provider() {
@@ -474,8 +472,7 @@ fn resolved_pane_tokens(
                     usable,
                     now,
                     pane.session.as_ref().and_then(|session| session.id()),
-                    style,
-                    shape,
+                    row,
                 )
                 .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
             } else {
@@ -491,8 +488,7 @@ fn resolved_pane_tokens(
                     usable.as_ref(),
                     now,
                     pane.session.as_ref().and_then(|session| session.id()),
-                    style,
-                    shape,
+                    row,
                 )
                 .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
             }
@@ -528,31 +524,19 @@ fn omp_quota(
     target: &BillingTarget,
     evidence: Option<&OmpEvidence>,
     now: u64,
-    style: PercentStyle,
-    shape: SidebarShape,
+    row: RowStyle,
     force: bool,
 ) -> Option<PaneQuotaUpdate> {
     let evidence = evidence?;
-    omp_quota_with_refresh(
-        cache,
-        target,
-        evidence,
-        now,
-        style,
-        shape,
-        force,
-        refresh_omp_target,
-    )
+    omp_quota_with_refresh(cache, target, evidence, now, row, force, refresh_omp_target)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn omp_quota_with_refresh(
     cache: &CacheStore,
     target: &BillingTarget,
     evidence: &OmpEvidence,
     now: u64,
-    style: PercentStyle,
-    shape: SidebarShape,
+    row: RowStyle,
     force: bool,
     refresh: impl FnOnce(&CacheStore, &BillingTarget, &OmpEvidence, u64) -> OmpUsage,
 ) -> Option<PaneQuotaUpdate> {
@@ -584,16 +568,14 @@ fn omp_quota_with_refresh(
         return cached
             .as_ref()
             .and_then(|snapshot| {
-                tokens_for_provider(Some(snapshot), now, None, style, shape)
+                tokens_for_provider(Some(snapshot), now, None, row)
                     .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
             })
             .or_else(unavailable);
     }
     match refresh(cache, target, evidence, now) {
-        OmpUsage::Account(snapshot) => {
-            tokens_for_provider(Some(&snapshot), now, None, style, shape)
-                .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
-        }
+        OmpUsage::Account(snapshot) => tokens_for_provider(Some(&snapshot), now, None, row)
+            .map(|values| PaneQuotaUpdate::Replace(Box::new(values))),
         // omp holds an API key for this provider and no subscription account
         // at all, so any subscription numbers still on the pane belong to a
         // login that is not paying for it.
@@ -604,7 +586,7 @@ fn omp_quota_with_refresh(
         OmpUsage::Unavailable | OmpUsage::Unknown => cached
             .as_ref()
             .and_then(|snapshot| {
-                tokens_for_provider(Some(snapshot), now, None, style, shape)
+                tokens_for_provider(Some(snapshot), now, None, row)
                     .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
             })
             .or_else(unavailable),
@@ -974,8 +956,8 @@ fn publish_resolved(
     }
     let mut tokens = Vec::new();
     let now = CacheStore::now_unix();
-    let style = cache.percent_style().unwrap_or_default();
     let shape = sidebar_shape(cache);
+    let row = RowStyle::new(cache.percent_style().unwrap_or_default(), shape);
     let mut refreshed_targets = Vec::new();
     for pane in panes.iter_mut() {
         let resolved = route::resolve_with_identity(pane);
@@ -987,7 +969,7 @@ fn publish_resolved(
             false
         };
         if let Some(pane_tokens) =
-            resolved_pane_tokens(cache, pane, resolved, now, style, shape, force_target)?
+            resolved_pane_tokens(cache, pane, resolved, now, row, force_target)?
         {
             tokens.push(pane_tokens);
         }
@@ -1192,11 +1174,16 @@ fn tokens_for_provider(
     snapshot: Option<&crate::model::ProviderSnapshot>,
     now_unix: u64,
     session_id: Option<&str>,
-    style: PercentStyle,
-    shape: SidebarShape,
+    row: RowStyle,
 ) -> Option<MetadataTokens> {
     snapshot.map(|snapshot| {
-        MetadataTokens::from_snapshot_for_pane(snapshot, now_unix, session_id, style, shape)
+        MetadataTokens::from_snapshot_for_pane(
+            snapshot,
+            now_unix,
+            session_id,
+            row.percent,
+            row.shape,
+        )
     })
 }
 
@@ -1206,13 +1193,10 @@ fn tokens_for_loaded_snapshot(
     usable: Option<&ProviderSnapshot>,
     now_unix: u64,
     session_id: Option<&str>,
-    style: PercentStyle,
-    shape: SidebarShape,
+    row: RowStyle,
 ) -> Option<MetadataTokens> {
     match (usable, raw) {
-        (Some(snapshot), _) => {
-            tokens_for_provider(Some(snapshot), now_unix, session_id, style, shape)
-        }
+        (Some(snapshot), _) => tokens_for_provider(Some(snapshot), now_unix, session_id, row),
         (None, Some(_)) => Some(MetadataTokens::unavailable(
             provider,
             "signed-in account changed",
@@ -1224,7 +1208,7 @@ fn tokens_for_loaded_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::SidebarLayout;
+    use crate::cli::{PercentStyle, SidebarLayout};
     use crate::model::{ProviderSnapshot, UsageWindow, WindowKind};
     use tempfile::tempdir;
 
@@ -1361,8 +1345,7 @@ mod tests {
                 &target,
                 &evidence,
                 110,
-                PercentStyle::default(),
-                SidebarShape::default(),
+                RowStyle::default(),
                 false,
                 |_, _, _, _| panic!("must not spawn once per account"),
             );
@@ -1495,21 +1478,47 @@ mod tests {
         assert_eq!(cache.load(Provider::Grok).unwrap(), Some(snapshot));
     }
 
+    /// Both legs of the shape have to be live: the layout comes from the
+    /// state-dir cache the publish hooks can see, the meter size from the
+    /// width Herdr is actually rendering.
+    #[test]
+    fn the_sidebar_shape_carries_both_the_chosen_layout_and_the_rendered_width() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path().join("cache"));
+        cache.set_sidebar_layout(SidebarLayout::Gauges).unwrap();
+        let state = directory.path().join("state");
+        let shell = state.join("herdr/client-shell");
+        std::fs::create_dir_all(&shell).unwrap();
+        let absent_config = directory.path().join("absent.toml");
+        for (width, cells) in [(22, 4), (35, 12)] {
+            std::fs::write(
+                shell.join("local-abc.json"),
+                format!("{{\"sidebar_width\": {width}}}"),
+            )
+            .unwrap();
+            crate::prefs::testing::with_env(
+                &[
+                    ("HERDR_CONFIG_FILE", Some(absent_config.as_os_str())),
+                    ("XDG_STATE_HOME", Some(state.as_os_str())),
+                ],
+                || {
+                    let shape = sidebar_shape(&cache);
+                    assert_eq!(shape.layout, SidebarLayout::Gauges);
+                    assert_eq!(shape.meter_cells, Some(cells), "width {width}");
+                },
+            );
+        }
+    }
+
     #[test]
     fn missing_snapshot_does_not_overwrite_sidebar_with_unavailable() {
-        let values = tokens_for_provider(
-            None,
-            1,
-            None,
-            PercentStyle::default(),
-            SidebarShape::default(),
-        );
+        let values = tokens_for_provider(None, 1, None, RowStyle::default());
         assert!(values.is_none());
     }
 
-    /// The publish path reads the layout from the state dir, so a cache that
-    /// has one recorded must still publish what an empty cache publishes
-    /// until U4 gives `gauges` its meter.
+    /// The publish path reads the layout from the state dir. A layout on its
+    /// own carries no meter, so a cache that has one recorded still publishes
+    /// exactly what an empty cache publishes.
     #[test]
     fn a_recorded_sidebar_layout_does_not_change_a_published_token() {
         let directory = tempdir().unwrap();
@@ -1528,16 +1537,20 @@ mod tests {
             Some(&snapshot),
             0,
             None,
-            PercentStyle::default(),
-            cache.sidebar_layout().unwrap_or_default().into(),
+            RowStyle::new(
+                PercentStyle::default(),
+                cache.sidebar_layout().unwrap_or_default().into(),
+            ),
         );
         cache.set_sidebar_layout(SidebarLayout::Stacked).unwrap();
         let stacked = tokens_for_provider(
             Some(&snapshot),
             0,
             None,
-            PercentStyle::default(),
-            cache.sidebar_layout().unwrap_or_default().into(),
+            RowStyle::new(
+                PercentStyle::default(),
+                cache.sidebar_layout().unwrap_or_default().into(),
+            ),
         );
         assert_eq!(cache.sidebar_layout(), Some(SidebarLayout::Stacked));
         assert_eq!(unset, stacked);
@@ -1562,8 +1575,7 @@ mod tests {
             &target,
             &evidence,
             100,
-            PercentStyle::default(),
-            SidebarShape::default(),
+            RowStyle::default(),
             false,
             |_, _, _, _| OmpUsage::Unavailable,
         )
@@ -1597,8 +1609,7 @@ mod tests {
             &target,
             &evidence,
             120,
-            PercentStyle::default(),
-            SidebarShape::default(),
+            RowStyle::default(),
             false,
             |_, _, _, _| panic!("debounced refresh must not run"),
         );
@@ -1632,8 +1643,7 @@ mod tests {
             &target,
             &evidence,
             200,
-            PercentStyle::default(),
-            SidebarShape::default(),
+            RowStyle::default(),
             false,
             |_, _, _, _| OmpUsage::Unavailable,
         )
@@ -1659,8 +1669,7 @@ mod tests {
             None,
             1,
             None,
-            PercentStyle::default(),
-            SidebarShape::default(),
+            RowStyle::default(),
         )
         .unwrap();
         assert_eq!(values.quota_week, "7d N/A");
