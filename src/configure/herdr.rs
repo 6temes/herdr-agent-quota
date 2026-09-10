@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
-const QUOTA_ROW_MARKERS: [&str; 40] = [
+const QUOTA_ROW_MARKERS: [&str; 43] = [
     "$quota_badge",
     "$quota_state",
     "$quota_icon",
@@ -18,6 +18,9 @@ const QUOTA_ROW_MARKERS: [&str; 40] = [
     "$quota_summary",
     "$quota_session",
     "$quota_context",
+    "$quota_context_normal",
+    "$quota_context_warning",
+    "$quota_context_danger",
     "$quota_cache",
     "$quota_cache_ttl",
     "$quota_cache_state",
@@ -930,7 +933,7 @@ fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
     // Context folds the weekly quota when 5h is absent; empty rows collapse.
     match layout {
         SidebarLayout::Packed => append_packed_quota_rows(rows),
-        SidebarLayout::Stacked | SidebarLayout::Gauges => append_stacked_quota_rows(rows),
+        SidebarLayout::Stacked | SidebarLayout::Gauges => append_stacked_quota_rows(rows, layout),
     }
 }
 
@@ -953,7 +956,7 @@ fn append_packed_quota_rows(rows: &mut Array) {
     append_window_row(rows);
 }
 
-fn append_stacked_quota_rows(rows: &mut Array) {
+fn append_stacked_quota_rows(rows: &mut Array, layout: SidebarLayout) {
     rows.push(Value::Array(styled_row(
         "$quota_cache",
         None,
@@ -978,12 +981,21 @@ fn append_stacked_quota_rows(rows: &mut Array) {
         Some(false),
         Some(false),
     )));
-    rows.push(Value::Array(styled_row(
-        "$quota_context",
-        None,
-        Some(false),
-        Some(false),
-    )));
+    match layout {
+        // Beside two coloured window rows, an uncoloured context row reads as
+        // an oversight rather than a decision.
+        SidebarLayout::Gauges => {
+            let mut context_row = Array::new();
+            append_context_style_tokens(&mut context_row);
+            rows.push(Value::Array(context_row));
+        }
+        _ => rows.push(Value::Array(styled_row(
+            "$quota_context",
+            None,
+            Some(false),
+            Some(false),
+        ))),
+    }
     let mut five_hour = Array::new();
     append_window_style_tokens(&mut five_hour, "quota_5h");
     rows.push(Value::Array(five_hour));
@@ -1043,7 +1055,10 @@ fn field_for_token(token: &str) -> Option<SidebarField> {
         "$quota_model" | "$quota_provider_model" => Some(SidebarField::Model),
         "$quota_cache" | "$quota_cache_state" => Some(SidebarField::Cache),
         "$quota_cache_ttl" => Some(SidebarField::Ttl),
-        "$quota_context" => Some(SidebarField::Context),
+        "$quota_context"
+        | "$quota_context_normal"
+        | "$quota_context_warning"
+        | "$quota_context_danger" => Some(SidebarField::Context),
         _ if token.starts_with("$quota_5h") => Some(SidebarField::FiveHour),
         _ if token.starts_with("$quota_week") => Some(SidebarField::Week),
         _ => None,
@@ -1084,6 +1099,24 @@ fn append_window_style_tokens(row: &mut Array, base: &str) {
         row.push(styled_token(
             &format!("${base}_{suffix}"),
             color,
+            Some(false),
+            Some(false),
+        ));
+    }
+}
+
+/// The context row's own severity family. Context severity is read from
+/// context *used*, and `Severity::for_context_used` always lands on one of
+/// these three, so there is no `unknown` variant to fill.
+fn append_context_style_tokens(row: &mut Array) {
+    for (suffix, color) in [
+        ("normal", QUOTA_SAFE_COLOR),
+        ("warning", QUOTA_WARNING_COLOR),
+        ("danger", QUOTA_DANGER_COLOR),
+    ] {
+        row.push(styled_token(
+            &format!("$quota_context_{suffix}"),
+            Some(color),
             Some(false),
             Some(false),
         ));
@@ -1566,14 +1599,16 @@ rows = [["state_icon", "agent"]]
             assert!(!rows
                 .iter()
                 .any(|row| row_contains_token(row, "$quota_model")));
-            for token in [
-                "$quota_cache",
-                "$quota_cache_ttl",
-                "$quota_error",
-                "$quota_context",
-            ] {
+            for token in ["$quota_cache", "$quota_cache_ttl", "$quota_error"] {
                 assert!(row_is_only_token(rows, token), "{token} shares a row");
             }
+            // The context row is the severity family here, not the plain
+            // token, so it is a row of three names rather than one.
+            assert!(rows.iter().any(|row| {
+                row_contains_token(row, "$quota_context_normal")
+                    && !row_contains_token(row, "$quota_5h_normal")
+                    && !row_contains_token(row, "$quota_week_normal")
+            }));
             assert!(rows.iter().any(|row| {
                 row_contains_token(row, "$quota_5h_normal")
                     && !row_contains_token(row, "$quota_week_normal")
@@ -1591,6 +1626,105 @@ rows = [["state_icon", "agent"]]
             .unwrap(),
             ""
         );
+    }
+
+    /// Herdr fixes `fg` per token name, so a coloured context row is a
+    /// severity-suffixed family exactly like the windows have.
+    #[test]
+    fn gauges_gives_the_context_row_its_own_severity_colours() {
+        let updated =
+            add_quota_row_for("", &AgentSelection::SUPPORTED, SidebarLayout::Gauges).unwrap();
+        let document = updated.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()
+            .unwrap();
+        let context_row = rows
+            .iter()
+            .find(|row| row_contains_token(row, "$quota_context_normal"))
+            .and_then(Value::as_array)
+            .expect("gauges context row");
+        let styled = context_row
+            .iter()
+            .map(|item| {
+                let table = item.as_inline_table().expect("styled token");
+                (
+                    table.get("token").and_then(Value::as_str).unwrap_or(""),
+                    table.get("fg").and_then(Value::as_str).unwrap_or(""),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            styled,
+            vec![
+                ("$quota_context_normal", QUOTA_SAFE_COLOR),
+                ("$quota_context_warning", QUOTA_WARNING_COLOR),
+                ("$quota_context_danger", QUOTA_DANGER_COLOR),
+            ]
+        );
+        assert!(!rows
+            .iter()
+            .any(|row| row_contains_token(row, "$quota_context")));
+    }
+
+    /// `packed` and `stacked` keep the plain uncoloured context token.
+    #[test]
+    fn packed_and_stacked_leave_the_context_row_uncoloured() {
+        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+            let updated = add_quota_row_for("", &AgentSelection::SUPPORTED, layout).unwrap();
+            let document = updated.parse::<DocumentMut>().unwrap();
+            let rows = document["ui"]["sidebar"]["agents"]["rows"]
+                .as_array()
+                .unwrap();
+            assert!(
+                rows.iter()
+                    .any(|row| row_contains_token(row, "$quota_context")),
+                "{layout:?}"
+            );
+            for suffix in ["normal", "warning", "danger"] {
+                let token = format!("$quota_context_{suffix}");
+                assert!(
+                    !rows.iter().any(|row| row_contains_token(row, &token)),
+                    "{layout:?} wrote {token}"
+                );
+            }
+        }
+    }
+
+    /// Uninstall strips by token name, so a name missing from the strip list
+    /// leaves an orphaned row behind.
+    #[test]
+    fn uninstall_strips_every_context_token_from_a_gauges_install() {
+        let installed = add_quota_row_for(
+            "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n",
+            &AgentSelection::SUPPORTED,
+            SidebarLayout::Gauges,
+        )
+        .unwrap();
+        assert!(installed.contains("$quota_context_normal"), "{installed}");
+        let removed = remove_quota_row(&installed).unwrap();
+        assert!(!removed.contains("quota_context"), "{removed}");
+        assert!(!removed.contains("$quota_"), "{removed}");
+    }
+
+    /// `--fields` without `context` has to drop the row whichever family the
+    /// layout publishes it into.
+    #[test]
+    fn hiding_context_drops_the_row_in_every_layout() {
+        for layout in SidebarLayout::CHOICES {
+            let updated = add_quota_row_with(
+                "",
+                &AgentSelection::SUPPORTED,
+                layout,
+                SidebarRowGap::default(),
+                FieldSet::all().toggled(SidebarField::Context),
+                BrandColors::On,
+            )
+            .unwrap();
+            assert!(
+                !updated.contains("$quota_context"),
+                "{layout:?}:\n{updated}"
+            );
+        }
     }
 
     #[test]

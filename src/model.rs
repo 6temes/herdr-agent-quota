@@ -923,6 +923,23 @@ impl Severity {
             Self::Danger
         }
     }
+
+    /// The context row reads *used*, not remaining, so its scale runs the
+    /// other way: a fuller context window is the worse one. Both scales end
+    /// green when the pane is healthy. Classify the rounded integer shown,
+    /// like [`Self::for_window`].
+    ///
+    /// Never `Unknown`: a context row exists only when a percent was read.
+    pub fn for_context_used(used_percent: f64) -> Self {
+        let displayed_used = used_percent.round();
+        if displayed_used >= 80.0 {
+            Self::Danger
+        } else if displayed_used >= 50.0 {
+            Self::Warning
+        } else {
+            Self::Normal
+        }
+    }
 }
 
 pub fn format_percent(value: f64) -> String {
@@ -1090,6 +1107,31 @@ mod tests {
         ] {
             let window = UsageWindow::new(WindowKind::Weekly, used_percent, Some(reset)).unwrap();
             assert_eq!(Severity::for_window(&window, now), expected);
+        }
+    }
+
+    /// Context severity runs the other way to the windows': it is thresholded
+    /// on used, so more is worse, and both scales read green when healthy.
+    #[test]
+    fn context_severity_is_thresholded_on_used_at_fifty_and_eighty() {
+        for (used_percent, expected) in [
+            (0.0, Severity::Normal),
+            (31.0, Severity::Normal),
+            (49.0, Severity::Normal),
+            (49.4, Severity::Normal),
+            (50.0, Severity::Warning),
+            (53.0, Severity::Warning),
+            (79.0, Severity::Warning),
+            (79.4, Severity::Warning),
+            (80.0, Severity::Danger),
+            (85.0, Severity::Danger),
+            (100.0, Severity::Danger),
+        ] {
+            assert_eq!(
+                Severity::for_context_used(used_percent),
+                expected,
+                "{used_percent} used"
+            );
         }
     }
 
